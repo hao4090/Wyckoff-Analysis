@@ -81,6 +81,7 @@ BREADTH_MA_WINDOW = int(os.getenv("FUNNEL_BREADTH_MA_WINDOW", "20"))
 BREADTH_RISK_OFF_THRESHOLD = float(os.getenv("FUNNEL_BREADTH_RISK_OFF_PCT", "20.0"))
 BREADTH_RISK_ON_THRESHOLD = float(os.getenv("FUNNEL_BREADTH_RISK_ON_PCT", "60.0"))
 BREADTH_RISK_ON_MIN_DELTA = float(os.getenv("FUNNEL_BREADTH_RISK_ON_DELTA", "0.0"))
+BREADTH_CLIFF_DROP_PCT = float(os.getenv("FUNNEL_BREADTH_CLIFF_DROP_PCT", "-10.0"))
 FUNNEL_EXPORT_FULL_FETCH = os.getenv("FUNNEL_EXPORT_FULL_FETCH", "0").strip().lower() in {
     "1",
     "true",
@@ -393,6 +394,10 @@ def _analyze_benchmark_and_tune_cfg(
         elif float(breadth_ratio) >= BREADTH_RISK_ON_THRESHOLD:
             if breadth_delta is None or float(breadth_delta) >= BREADTH_RISK_ON_MIN_DELTA:
                 regime = "RISK_ON"
+
+        # 强力悬崖检测 (Breadth Cliff Drop): 赚了指数不赚钱，暗流涌动的隐性雪崩
+        if breadth_delta is not None and float(breadth_delta) <= BREADTH_CLIFF_DROP_PCT:
+            regime = "RISK_OFF"
 
     # 动态调参：风险越冷，过滤越严
     if regime == "RISK_OFF":

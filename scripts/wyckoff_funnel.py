@@ -936,7 +936,7 @@ def _rank_l3_watchlist(
     triggers: dict[str, list[tuple[str, float]]],
     top_sectors: list[str],
     top_k: int = 15,
-) -> tuple[list[str], list[dict], dict[str, float]]:
+) -> tuple[list[str], list[dict], dict[str, float], list[dict]]:
     """
     对 L3 股票做统一优先级排序，并给出 TopK 自选建议。
     评分构成（分位）：
@@ -947,7 +947,7 @@ def _rank_l3_watchlist(
     - Top行业额外加分 0.05
     """
     if not l3_symbols:
-        return ([], [], {})
+        return ([], [], {}, [])
 
     trigger_score_map: dict[str, float] = {}
     trigger_reason_map: dict[str, list[str]] = {}
@@ -1026,18 +1026,75 @@ def _rank_l3_watchlist(
         for _, r in rank_df.iterrows()
     }
 
-    top_rows: list[dict] = []
-    for _, r in rank_df.head(max(int(top_k), 0)).iterrows():
-        reason = str(r.get("reasons", "")).strip() or "L3共振通过"
-        top_rows.append(
+    def _fnum(v: object, nd: int = 2, fallback: str = "-") -> str:
+        try:
+            x = float(v)  # type: ignore[arg-type]
+        except Exception:
+            return fallback
+        if pd.isna(x):
+            return fallback
+        return f"{x:.{nd}f}"
+
+    ranked_rows: list[dict] = []
+    for _, r in rank_df.iterrows():
+        trigger_reason = str(r.get("reasons", "")).strip()
+        industry = str(r.get("industry", "")).strip() or "未知行业"
+        hot_bonus = float(r.get("hot_bonus", 0.0))
+        ret20 = r.get("ret20")
+        ret5 = r.get("ret5")
+        dry_ratio = r.get("min_vol_ratio_5d")
+        parts: list[str] = []
+        if hot_bonus > 0:
+            parts.append("Top行业共振")
+        else:
+            parts.append("行业共振通过")
+        if trigger_reason:
+            parts.append(f"L4痕迹:{trigger_reason}")
+        else:
+            parts.append("未触发L4扳机")
+        try:
+            dry_v = float(dry_ratio)  # type: ignore[arg-type]
+            if not pd.isna(dry_v) and dry_v <= 1.0:
+                parts.append(f"近5日有缩量(最小量比{dry_v:.2f})")
+        except Exception:
+            pass
+        parts.append(
+            f"20日动量{_fnum(ret20, 1, '0.0')}%/5日{_fnum(ret5, 1, '0.0')}%"
+        )
+        ranked_rows.append(
             {
                 "code": str(r["code"]),
+                "industry": industry,
+                "reason": "；".join(parts),
+                "score": float(r["watch_score"]),
+                "ret20": (float(ret20) if pd.notna(pd.to_numeric(ret20, errors='coerce')) else None),
+                "ret5": (float(ret5) if pd.notna(pd.to_numeric(ret5, errors='coerce')) else None),
+                "min_vol_ratio_5d": (
+                    float(dry_ratio)
+                    if pd.notna(pd.to_numeric(dry_ratio, errors="coerce"))
+                    else None
+                ),
+                "trigger_labels": trigger_reason,
+            }
+        )
+
+    top_rows: list[dict] = []
+    for _, r in rank_df.head(max(int(top_k), 0)).iterrows():
+        code = str(r["code"])
+        reason = "L3共振通过"
+        for row in ranked_rows:
+            if row.get("code") == code:
+                reason = str(row.get("reason", "")).strip() or reason
+                break
+        top_rows.append(
+            {
+                "code": code,
                 "industry": str(r.get("industry", "")),
                 "reason": reason,
                 "score": float(r["watch_score"]),
             }
         )
-    return (ranked_symbols, top_rows, score_map)
+    return (ranked_symbols, top_rows, score_map, ranked_rows)
 
 
 def run_funnel_job() -> tuple[dict[str, list[tuple[str, float]]], dict]:
@@ -1295,7 +1352,7 @@ def run_funnel_job() -> tuple[dict[str, list[tuple[str, float]]], dict]:
     triggers = layer4_triggers(l3_passed, all_df_map, cfg)
 
     total_hits = sum(len(v) for v in triggers.values())
-    ranked_l3_symbols, watchlist_top15, l3_score_map = _rank_l3_watchlist(
+    ranked_l3_symbols, watchlist_top15, l3_score_map, l3_ranked_rows = _rank_l3_watchlist(
         l3_symbols=l3_passed,
         df_map=all_df_map,
         sector_map=sector_map,
@@ -1321,6 +1378,7 @@ def run_funnel_job() -> tuple[dict[str, list[tuple[str, float]]], dict]:
         "top_sectors": top_sectors,
         "layer3_symbols": ranked_l3_symbols or l3_passed,
         "layer3_score_map": l3_score_map,
+        "layer3_ranked_rows": l3_ranked_rows,
         "watchlist_top15": watchlist_top15,
         "total_hits": total_hits,
         "by_trigger": {k: len(v) for k, v in triggers.items()},
@@ -1362,7 +1420,9 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
     unique_hit_count = len(sorted_codes)
     selected_for_ai = sorted_codes
     l3_score_map = metrics.get("layer3_score_map", {}) or {}
+    l3_ranked_rows = metrics.get("layer3_ranked_rows", []) or []
     watchlist_top15 = metrics.get("watchlist_top15", []) or []
+    by_trigger = metrics.get("by_trigger", {}) or {}
 
     print(
         f"[funnel] 候选分层: 命中事件={metrics['total_hits']}, 命中股票={unique_hit_count}, "
@@ -1435,7 +1495,19 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
 
     if not selected_for_ai:
         lines.append("无")
-    elif watchlist_top15:
+        lines.extend(
+            [
+                "",
+                "**为什么没命中（L4触发=0）**",
+                f"• Spring={int(by_trigger.get('spring', 0))}, "
+                f"LPS={int(by_trigger.get('lps', 0))}, "
+                f"EVR={int(by_trigger.get('evr', 0))}",
+                "• 当前候选仅停留在 L3 共振阶段，尚未出现日线级别的 Spring/LPS/EVR 扳机信号。",
+                "• AI 输入集合按 L4 命中构建，因此本轮为 0。",
+            ]
+        )
+
+    if watchlist_top15:
         lines.extend(
             [
                 "",
@@ -1444,6 +1516,28 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
             ]
         )
         for row in watchlist_top15:
+            code = str(row.get("code", ""))
+            if not code:
+                continue
+            name = name_map.get(code, code)
+            industry = str(row.get("industry", "")).strip() or "未知行业"
+            reason = str(row.get("reason", "")).strip() or "L3共振通过"
+            score = float(row.get("score", 0.0))
+            lines.append(
+                f"• {code} {name} | {industry} | {reason} | score={score:.2f}"
+            )
+
+    lines.extend(
+        [
+            "",
+            f"**L3 全量清单（共{len(l3_ranked_rows)}）代码 名称 | 行业 | 选择原因 | 分值**",
+            "",
+        ]
+    )
+    if not l3_ranked_rows:
+        lines.append("无")
+    else:
+        for row in l3_ranked_rows:
             code = str(row.get("code", ""))
             if not code:
                 continue

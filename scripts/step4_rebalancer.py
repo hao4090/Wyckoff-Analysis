@@ -1515,11 +1515,11 @@ def run(
     else:
         print(f"[step4] AI 订单记录写入失败（已忽略，不阻断流程） | portfolio_id={portfolio_id}")
 
-    positions_value = max(float(total_equity) - float(portfolio.free_cash), 0.0)
+    positions_value = max(float(total_equity) - float(free_cash_after), 0.0)
     if upsert_daily_nav(
         portfolio_id=portfolio_id,
         trade_date=trade_date,
-        free_cash=portfolio.free_cash,
+        free_cash=float(free_cash_after),
         total_equity=float(total_equity),
         positions_value=positions_value,
     ):

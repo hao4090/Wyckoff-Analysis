@@ -486,7 +486,7 @@ def _is_trading_range_context(zone: pd.DataFrame, cfg: FunnelConfig) -> bool:
 
 def _detect_spring(df: pd.DataFrame, cfg: FunnelConfig) -> float | None:
     """
-    Spring（终极震仓）：前一日 low 跌破近 N 日支撑位，今日收盘收回，且放量。
+    Spring（终极震仓）：允许“前一日或当日盘中”跌破近 N 日支撑位，且当日收盘收回并放量。
     返回 score（收回幅度%）或 None。
     """
     if len(df) < cfg.spring_support_window + 2:
@@ -499,7 +499,8 @@ def _detect_spring(df: pd.DataFrame, cfg: FunnelConfig) -> float | None:
     prev = df_s.iloc[-2]
     last = df_s.iloc[-1]
 
-    if prev["low"] >= support_level:
+    # 允许单日盘中洗盘（长下影锤子线）：只要 prev/last 至少一日跌破即可。
+    if (prev["low"] >= support_level) and (last["low"] >= support_level):
         return None
     if last["close"] <= support_level:
         return None

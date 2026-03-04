@@ -19,6 +19,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import fields as dataclass_fields
+from dataclasses import replace
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -30,6 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.wyckoff_engine import FunnelConfig, normalize_hist_from_fetch, run_funnel
 from integrations.data_source import fetch_index_hist, fetch_market_cap_map, fetch_sector_map, fetch_stock_hist
 from integrations.fetch_a_share_csv import get_stocks_by_board, _normalize_symbols
+from scripts.wyckoff_funnel import (
+    _analyze_benchmark_and_tune_cfg as _tune_cfg_by_regime,
+    _calc_market_breadth as _calc_market_breadth_for_regime,
+)
 
 DEFAULT_HOLD_DAYS = 5
 DEFAULT_EXIT_MODE = "sltp"
@@ -409,8 +414,8 @@ def run_backtest(
             "[backtest] 偏差抑制口径：关闭当前截面市值/行业映射过滤 "
             "(L1 市值过滤 + L3 行业共振过滤)"
         )
-    cfg = FunnelConfig(trading_days=trading_days)
-    _apply_funnel_cfg_overrides(cfg)
+    base_cfg = FunnelConfig(trading_days=trading_days)
+    _apply_funnel_cfg_overrides(base_cfg)
 
     records: list[TradeRecord] = []
     signal_days = 0
@@ -429,15 +434,26 @@ def run_backtest(
             if s.empty:
                 continue
             tail = s.tail(trading_days)
-            if len(tail) < cfg.ma_long:
+            if len(tail) < base_cfg.ma_long:
                 continue
             day_df_map[code] = tail
         if not day_df_map:
             continue
 
         bench_slice = bench_df[bench_df["date"] <= signal_date].tail(trading_days)
-        if len(bench_slice) < cfg.ma_long:
+        if len(bench_slice) < base_cfg.ma_long:
             continue
+
+        # 回测与实盘同构：按“当日”市场状态动态调参，避免静态 cfg 导致口径漂移。
+        day_cfg = replace(base_cfg)
+        day_breadth = _calc_market_breadth_for_regime(day_df_map)
+        _tune_cfg_by_regime(
+            bench_slice,
+            None,
+            day_cfg,
+            breadth=day_breadth,
+            panic_snapshot={"ok": False},
+        )
 
         eval_days += 1
         result = run_funnel(
@@ -447,7 +463,7 @@ def run_backtest(
             name_map=name_map,
             market_cap_map=market_cap_map,
             sector_map=sector_map,
-            cfg=cfg,
+            cfg=day_cfg,
         )
         score_map = _combine_trigger_scores(result.triggers)
         if not score_map:

@@ -640,8 +640,10 @@ def layer3_sector_resonance(
     top_sectors = (
         keep_sectors_sorted[:top_n] if top_n > 0 else keep_sectors_sorted
     )
-    keep_set = set(keep_sectors)
-    filtered = [sym for sym in symbols if sector_map.get(sym, "") in keep_set]
+    
+    # 威科夫重个股量价、轻板块。为了避免把底部尚未形成板块效应的吸筹股、潜伏股错杀，
+    # L3 板块共振不再做硬性拦截（不剔除股票），只作特征打标签和 Top 行业计算输出。
+    filtered = symbols
     return filtered, top_sectors
 
 

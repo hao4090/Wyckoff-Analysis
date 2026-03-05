@@ -24,6 +24,7 @@ STEP3_REASON_MAP = {
     "feishu_failed": "飞书推送失败",
     "skipped_no_symbols": "无输入股票，已跳过",
     "no_data_but_no_error": "无可用数据",
+    "ok_preview": "预演模式：未调用模型，仅展示输入",
 }
 STEP4_REASON_MAP = {
     "missing_api_key": "GEMINI_API_KEY 缺失",
@@ -82,6 +83,8 @@ def main() -> int:
     webhook = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip() or "gemini-2.5-flash-lite"
+    step3_skip_llm = os.getenv("STEP3_SKIP_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
+    skip_step4 = os.getenv("DAILY_JOB_SKIP_STEP4", "").strip().lower() in {"1", "true", "yes", "on"}
 
     logs_path = args.logs or os.path.join(
         os.getenv("LOGS_DIR", "logs"),
@@ -92,7 +95,9 @@ def main() -> int:
     missing = []
     if not webhook:
         missing.append("FEISHU_WEBHOOK_URL")
-    if not api_key:
+    # 仅当需要调用模型时强制要求 GEMINI_API_KEY
+    require_api_key = (not step3_skip_llm) or (not skip_step4)
+    if require_api_key and not api_key:
         missing.append("GEMINI_API_KEY")
     if missing:
         _log(f"配置缺失: {', '.join(missing)}", logs_path)
@@ -165,8 +170,19 @@ def main() -> int:
         _log("阶段 2 批量研报: 跳过（无筛选结果）", logs_path)
 
     # 阶段 3：私人账户再平衡（按 SUPABASE_USER_ID 唯一执行）
-    step4_target, step4_target_reason = _load_step4_target()
-    if not step4_target:
+    if skip_step4:
+        summary.append({
+            "step": "私人再平衡",
+            "ok": True,
+            "err": None,
+            "elapsed_s": 0,
+            "output": "skipped (DAILY_JOB_SKIP_STEP4=1)",
+        })
+        _log("阶段 3 私人再平衡: 跳过（DAILY_JOB_SKIP_STEP4=1）", logs_path)
+        step4_target = None
+    else:
+        step4_target, step4_target_reason = _load_step4_target()
+    if not skip_step4 and not step4_target:
         summary.append({
             "step": "私人再平衡",
             "ok": True,
@@ -175,7 +191,7 @@ def main() -> int:
             "output": f"skipped ({step4_target_reason})",
         })
         _log(f"阶段 3 私人再平衡: 跳过（{step4_target_reason}）", logs_path)
-    else:
+    elif not skip_step4:
         tg_bot_token = os.getenv("TG_BOT_TOKEN", "").strip()
         tg_chat_id = os.getenv("TG_CHAT_ID", "").strip()
         if not tg_bot_token or not tg_chat_id:

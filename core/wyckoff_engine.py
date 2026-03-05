@@ -124,9 +124,10 @@ class FunnelConfig:
 
     # Layer 3
     # 行业共振过滤：按”行业样本数分位阈值 + 最小样本数”动态过滤，避免固定 TopN 误杀。
-    top_n_sectors: int = 3
+    top_n_sectors: int = 5
     sector_min_count: int = 3
     sector_count_quantile: float = 0.70
+    sector_super_strength_quantile: float = 0.90  # 小而强板块免死阈值（强度分位）
 
     # Layer 4 - Spring
     spring_support_window: int = 60
@@ -599,20 +600,46 @@ def layer3_sector_resonance(
     strength_vals = list(sector_strength_map.values())
     strength_threshold = float(np.quantile(np.array(strength_vals, dtype=float), q)) if strength_vals else 0.0
 
-    keep_sectors = [
-        s
-        for s, c in ranked
-        if c >= threshold
-        and pass_ratio_map.get(s, 0.0) >= pass_threshold
-        and sector_strength_map.get(s, 0.0) >= strength_threshold
-    ]
+    # 小而强板块免死阈值：强度进 Top X% 时放宽数量门槛，防止概念主线被大行业吞没。
+    super_q = float(getattr(cfg, "sector_super_strength_quantile", 0.90))
+    super_q = min(max(super_q, 0.0), 1.0)
+    super_strength_threshold = (
+        float(np.quantile(np.array(strength_vals, dtype=float), super_q))
+        if strength_vals
+        else 0.0
+    )
+
+    keep_sectors: list[str] = []
+    for s, c in ranked:
+        pass_r = pass_ratio_map.get(s, 0.0)
+        str_val = sector_strength_map.get(s, 0.0)
+        normal_pass = (
+            c >= threshold
+            and pass_r >= pass_threshold
+            and str_val >= strength_threshold
+        )
+        super_pass = (c >= min_count and str_val >= super_strength_threshold)
+        if normal_pass or super_pass:
+            keep_sectors.append(s)
     if not keep_sectors:
         # 极端场景兜底：至少保留样本最多的行业，避免空集。
         max_count = int(size_arr.max()) if size_arr.size > 0 else 0
         keep_sectors = [s for s, c in ranked if c == max_count]
 
+    # Top 行业按强度排序展示，而非按数量排序，提升“主线识别”灵敏度。
+    keep_sectors_sorted = sorted(
+        keep_sectors,
+        key=lambda s: (
+            -sector_strength_map.get(s, 0.0),
+            -pass_ratio_map.get(s, 0.0),
+            -counts.get(s, 0),
+            s,
+        ),
+    )
     top_n = max(int(cfg.top_n_sectors), 0)
-    top_sectors = [s for s, _ in (ranked[:top_n] if top_n > 0 else ranked)]
+    top_sectors = (
+        keep_sectors_sorted[:top_n] if top_n > 0 else keep_sectors_sorted
+    )
     keep_set = set(keep_sectors)
     filtered = [sym for sym in symbols if sector_map.get(sym, "") in keep_set]
     return filtered, top_sectors

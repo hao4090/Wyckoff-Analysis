@@ -37,6 +37,9 @@ STEP3_ENABLE_COMPRESSION = False
 STEP3_ENABLE_RAG_VETO = os.getenv("STEP3_ENABLE_RAG_VETO", "1").strip().lower() in {
     "1", "true", "yes", "on"
 }
+STEP3_SKIP_LLM = os.getenv("STEP3_SKIP_LLM", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 RECENT_DAYS = 15
@@ -88,6 +91,39 @@ def _dump_model_input(
         f.write(body)
     print(f"[step3] 模型输入已落盘: {path}")
     return path
+
+
+def _send_input_preview(
+    webhook_url: str,
+    model: str,
+    system_prompt: str,
+    user_message: str,
+    selected_count: int,
+) -> tuple[bool, str]:
+    """
+    预演模式：不调用模型，仅展示将发送给模型的输入内容。
+    """
+    report = (
+        "# 🧪 Step3 模型输入预演（未调用大模型）\n\n"
+        f"- 目标模型: `{model}`\n"
+        f"- 输入股票数: `{selected_count}`\n"
+        "- 模式: `STEP3_SKIP_LLM=1`\n\n"
+        "## SYSTEM PROMPT\n\n"
+        "```text\n"
+        f"{system_prompt}\n"
+        "```\n\n"
+        "## USER MESSAGE\n\n"
+        "```text\n"
+        f"{user_message}\n"
+        "```\n"
+    )
+    title = f"🧪 模型输入预演 {date.today().strftime('%Y-%m-%d')}"
+    sent = send_feishu_notification(webhook_url, title, report)
+    if not sent:
+        print("[step3] 预演报告飞书推送失败")
+        return (False, report)
+    print(f"[step3] 预演报告发送成功，股票数={selected_count}")
+    return (True, report)
 
 
 def _has_required_sections(report: str) -> bool:
@@ -850,6 +886,18 @@ def run(
     selected_set = set(selected_codes)
     selected_items = [x for x in items if str(x.get("code")) in selected_set]
     _dump_model_input(items=selected_items, model=model, system_prompt=WYCKOFF_FUNNEL_SYSTEM_PROMPT, user_message=user_message)
+
+    if STEP3_SKIP_LLM:
+        ok, preview_report = _send_input_preview(
+            webhook_url=webhook_url,
+            model=model,
+            system_prompt=WYCKOFF_FUNNEL_SYSTEM_PROMPT,
+            user_message=user_message,
+            selected_count=len(parts),
+        )
+        if not ok:
+            return (False, "feishu_failed", preview_report)
+        return (True, "ok_preview", preview_report)
 
     report = ""
     used_model = ""

@@ -1522,6 +1522,36 @@ def allocate_ai_candidates(
     trend_channel_tags = {"主升通道", "点火破局"}
     accum_channel_tags = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护盘"}
 
+    def _fit_quotas_to_total_cap(
+        total_cap_local: int,
+        trend_quota_local: int,
+        accum_quota_local: int,
+    ) -> tuple[int, int]:
+        if total_cap_local <= 0:
+            return (0, 0)
+        requested_total = max(trend_quota_local, 0) + max(accum_quota_local, 0)
+        if requested_total <= total_cap_local:
+            return (max(trend_quota_local, 0), max(accum_quota_local, 0))
+        if requested_total <= 0:
+            return (0, 0)
+
+        trend_eff = min(
+            max(int(round(total_cap_local * (max(trend_quota_local, 0) / requested_total))), 0),
+            max(trend_quota_local, 0),
+        )
+        accum_eff = min(max(accum_quota_local, 0), max(total_cap_local - trend_eff, 0))
+        remaining = max(total_cap_local - trend_eff - accum_eff, 0)
+
+        if remaining > 0 and trend_eff < max(trend_quota_local, 0):
+            take = min(remaining, max(trend_quota_local, 0) - trend_eff)
+            trend_eff += take
+            remaining -= take
+        if remaining > 0 and accum_eff < max(accum_quota_local, 0):
+            take = min(remaining, max(accum_quota_local, 0) - accum_eff)
+            accum_eff += take
+
+        return (trend_eff, accum_eff)
+
     def _channel_tags(code: str) -> set[str]:
         raw = str(result.channel_map.get(code, "")).strip()
         if not raw:
@@ -1630,8 +1660,26 @@ def allocate_ai_candidates(
     trend_candidates_with_score.sort(key=lambda x: -x[1])
     accum_candidates_with_score.sort(key=lambda x: -x[1])
 
-    trend_candidates = [c[0] for c in trend_candidates_with_score if not _is_blocked_exit(c[0])]
-    accum_candidates = [c[0] for c in accum_candidates_with_score if not _is_blocked_exit(c[0])]
+    trend_candidates = _dedup_order(
+        [c[0] for c in trend_candidates_with_score if not _is_blocked_exit(c[0])]
+    )
+    accum_candidates = _dedup_order(
+        [c[0] for c in accum_candidates_with_score if not _is_blocked_exit(c[0])]
+    )
+
+    if total_cap <= 0:
+        score_map = {}
+        for c, s in trend_candidates_with_score:
+            score_map[c] = s
+        for c, s in accum_candidates_with_score:
+            score_map[c] = max(score_map.get(c, -9999.0), s)
+        return ([], [], score_map)
+
+    trend_quota, accum_quota = _fit_quotas_to_total_cap(
+        total_cap,
+        trend_quota,
+        accum_quota,
+    )
 
     selected_seen = set()
     trend_selected = []
@@ -1656,17 +1704,34 @@ def allocate_ai_candidates(
     trend_idx = 0
     accum_idx = 0
 
-    while (len(trend_selected) < trend_quota or len(accum_selected) < accum_quota) and (trend_idx < len(trend_candidates) or accum_idx < len(accum_candidates)):
-        if len(trend_selected) < trend_quota and trend_idx < len(trend_candidates):
+    while (
+        len(selected_seen) < total_cap
+        and (len(trend_selected) < trend_quota or len(accum_selected) < accum_quota)
+        and (trend_idx < len(trend_candidates) or accum_idx < len(accum_candidates))
+    ):
+        progressed = False
+
+        while len(trend_selected) < trend_quota and trend_idx < len(trend_candidates):
             code = trend_candidates[trend_idx]
             trend_idx += 1
-            if code not in selected_seen:
-                _add_to_selected(code, "Trend")
-        if len(accum_selected) < accum_quota and accum_idx < len(accum_candidates):
+            if code in selected_seen:
+                continue
+            progressed = _add_to_selected(code, "Trend") or progressed
+            break
+
+        if len(selected_seen) >= total_cap:
+            break
+
+        while len(accum_selected) < accum_quota and accum_idx < len(accum_candidates):
             code = accum_candidates[accum_idx]
             accum_idx += 1
-            if code not in selected_seen:
-                _add_to_selected(code, "Accum")
+            if code in selected_seen:
+                continue
+            progressed = _add_to_selected(code, "Accum") or progressed
+            break
+
+        if not progressed:
+            break
 
     score_map = {}
     for c, s in trend_candidates_with_score:

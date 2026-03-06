@@ -1236,7 +1236,17 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
         exit_signals=exit_signals,
         channel_map=l2_channel_map,
     )
-    trend_selected, accum_selected, score_map = allocate_ai_candidates(mock_result, l3_ranked_symbols, regime)
+    alloc_started = time.monotonic()
+    trend_selected, accum_selected, score_map = allocate_ai_candidates(
+        mock_result,
+        l3_ranked_symbols,
+        regime,
+    )
+    alloc_elapsed = time.monotonic() - alloc_started
+    print(
+        f"[funnel] AI候选分配完成: trend={len(trend_selected)}, accum={len(accum_selected)}, "
+        f"elapsed={alloc_elapsed:.3f}s"
+    )
     selected_for_ai = trend_selected + accum_selected
     
     def _channel_tags(code: str) -> set[str]:

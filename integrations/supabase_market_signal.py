@@ -86,6 +86,7 @@ def _benchmark_regime_desc(regime: str) -> str:
 def _premarket_regime_desc(regime: str) -> str:
     mapping = {
         "NORMAL": "平稳",
+        "CAUTION": "情绪冲击",
         "RISK_OFF": "转冷",
         "BLACK_SWAN": "急剧恶化",
     }
@@ -106,30 +107,31 @@ def compose_market_banner(row: dict[str, Any] | None) -> dict[str, str]:
         tone = "恶劣"
     elif premarket_regime in {"BLACK_SWAN", "RISK_OFF"} or benchmark_regime == "RISK_OFF":
         tone = "保守"
-    elif benchmark_regime == "NEUTRAL":
-        tone = "谨慎"
     elif benchmark_regime == "RISK_ON" and (
-        premarket_regime in {"BLACK_SWAN", "RISK_OFF"}
+        premarket_regime == "CAUTION"
         or (a50_pct is not None and a50_pct < 0)
         or (vix_pct is not None and vix_pct >= 8.0)
     ):
         tone = "谨慎乐观"
+    elif benchmark_regime == "NEUTRAL" or premarket_regime == "CAUTION":
+        tone = "谨慎"
     elif benchmark_regime == "RISK_ON":
         tone = "乐观"
     else:
         tone = "谨慎"
 
-    bench_desc = _benchmark_regime_desc(benchmark_regime)
-    pre_desc = _premarket_regime_desc(premarket_regime)
-
     if benchmark_regime == "RISK_ON" and premarket_regime in {"BLACK_SWAN", "RISK_OFF"}:
         title = "亲爱的投资者，最新交易日的大盘偏强，但盘前风险已显著抬升。"
+    elif benchmark_regime == "RISK_ON" and premarket_regime == "CAUTION":
+        title = "亲爱的投资者，最新交易日的大盘仍偏强，但盘前情绪出现扰动。"
     elif benchmark_regime in {"CRASH", "BLACK_SWAN"}:
         title = "亲爱的投资者，最新交易日市场环境恶劣，防守优先。"
     elif benchmark_regime == "RISK_ON" and premarket_regime == "NORMAL":
         title = "亲爱的投资者，最新交易日的大盘与盘前信号共振偏强。"
     elif benchmark_regime == "NEUTRAL" and premarket_regime in {"BLACK_SWAN", "RISK_OFF"}:
         title = "亲爱的投资者，最新交易日水温中性，但盘前风险需要优先防守。"
+    elif benchmark_regime == "NEUTRAL" and premarket_regime == "CAUTION":
+        title = "亲爱的投资者，最新交易日水温中性，盘前情绪有扰动。"
     else:
         title = "亲爱的投资者，最新交易日请顺势而为，保持节奏。"
 

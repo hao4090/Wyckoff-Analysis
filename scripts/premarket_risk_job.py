@@ -30,6 +30,7 @@ TZ = ZoneInfo("Asia/Shanghai")
 RISK_A50_CRASH_PCT = float(os.getenv("PREMARKET_A50_CRASH_PCT", "-2.0"))
 RISK_A50_OFF_PCT = float(os.getenv("PREMARKET_A50_RISK_OFF_PCT", "-1.0"))
 RISK_VIX_CRASH_PCT = float(os.getenv("PREMARKET_VIX_CRASH_PCT", "15.0"))
+RISK_VIX_CRASH_CLOSE = float(os.getenv("PREMARKET_VIX_CRASH_CLOSE", "25.0"))
 RISK_VIX_OFF_PCT = float(os.getenv("PREMARKET_VIX_RISK_OFF_PCT", "8.0"))
 
 
@@ -44,6 +45,17 @@ def _build_action_matrix(regime: str) -> list[str]:
             "- ⛔ `LIGHT_ADD`：禁止",
             "- ⛔ `PROBE`：禁止",
             "- ⛔ `ATTACK`：禁止",
+            "- ⛔ `FULL_ATTACK`：禁止",
+        ]
+    if regime == "CAUTION":
+        return [
+            "🟠 **盘前动作开关**（CAUTION）",
+            "- ✅ `EXIT`：允许",
+            "- ✅ `TRIM`：允许",
+            "- ✅ `HOLD`：允许（保持防守纪律）",
+            "- ⚠️ `LIGHT_ADD`：仅允许对**已有强势浮盈仓位**小幅加仓",
+            "- ✅ `PROBE`：允许（仅小仓位试探，盘中需二次确认）",
+            "- ⛔ `ATTACK`：默认禁止",
             "- ⛔ `FULL_ATTACK`：禁止",
         ]
     if regime == "RISK_OFF":
@@ -323,26 +335,55 @@ def _fetch_vix() -> dict:
 
 
 def _judge_regime(a50: dict, vix: dict) -> tuple[str, list[str]]:
+    severity_rank = {
+        "NORMAL": 0,
+        "CAUTION": 1,
+        "RISK_OFF": 2,
+        "BLACK_SWAN": 3,
+    }
+
+    def _escalate(current: str, target: str) -> str:
+        return target if severity_rank.get(target, 0) > severity_rank.get(current, 0) else current
+
     reasons: list[str] = []
     regime = "NORMAL"
 
     a50_pct = _safe_float(a50.get("pct_chg"))
+    vix_close = _safe_float(vix.get("close"))
     vix_pct = _safe_float(vix.get("pct_chg"))
 
     if a50_pct is not None and a50_pct <= RISK_A50_CRASH_PCT:
-        regime = "BLACK_SWAN"
+        regime = _escalate(regime, "BLACK_SWAN")
         reasons.append(f"A50跌幅 {a50_pct:.2f}% <= {RISK_A50_CRASH_PCT:.2f}%")
     if vix_pct is not None and vix_pct >= RISK_VIX_CRASH_PCT:
-        regime = "BLACK_SWAN"
-        reasons.append(f"VIX涨幅 {vix_pct:.2f}% >= {RISK_VIX_CRASH_PCT:.2f}%")
+        if vix_close is not None and vix_close >= RISK_VIX_CRASH_CLOSE:
+            regime = _escalate(regime, "BLACK_SWAN")
+            reasons.append(
+                f"VIX绝对值 {vix_close:.2f} >= {RISK_VIX_CRASH_CLOSE:.2f} 且涨幅 {vix_pct:.2f}% >= {RISK_VIX_CRASH_PCT:.2f}%"
+            )
+        else:
+            regime = _escalate(regime, "CAUTION")
+            if vix_close is None:
+                reasons.append(
+                    f"VIX涨幅 {vix_pct:.2f}% >= {RISK_VIX_CRASH_PCT:.2f}%（绝对值缺失，按 CAUTION 处理）"
+                )
+            else:
+                reasons.append(
+                    f"VIX涨幅 {vix_pct:.2f}% >= {RISK_VIX_CRASH_PCT:.2f}% 但绝对值 {vix_close:.2f} < {RISK_VIX_CRASH_CLOSE:.2f}，按 CAUTION 处理"
+                )
 
     if regime != "BLACK_SWAN":
         if a50_pct is not None and a50_pct <= RISK_A50_OFF_PCT:
-            regime = "RISK_OFF"
+            regime = _escalate(regime, "RISK_OFF")
             reasons.append(f"A50跌幅 {a50_pct:.2f}% <= {RISK_A50_OFF_PCT:.2f}%")
         if vix_pct is not None and vix_pct >= RISK_VIX_OFF_PCT:
-            regime = "RISK_OFF"
-            reasons.append(f"VIX涨幅 {vix_pct:.2f}% >= {RISK_VIX_OFF_PCT:.2f}%")
+            is_vix_caution_case = (
+                vix_pct >= RISK_VIX_CRASH_PCT
+                and (vix_close is None or vix_close < RISK_VIX_CRASH_CLOSE)
+            )
+            if not is_vix_caution_case:
+                regime = _escalate(regime, "RISK_OFF")
+                reasons.append(f"VIX涨幅 {vix_pct:.2f}% >= {RISK_VIX_OFF_PCT:.2f}%")
 
     if not reasons:
         reasons.append("A50/VIX 未触发风险阈值")

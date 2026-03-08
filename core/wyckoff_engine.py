@@ -435,14 +435,24 @@ def layer2_strength_detailed(
         if cfg.enable_rps_filter and rps_filter_active and len(df_sorted) >= cfg.rps_slope_window:
             close_series = pd.to_numeric(df_sorted["close"], errors="coerce")
             rps_window = max(int(cfg.rps_slope_window), 2)
+            
+            # 计算最近 N 日的收益率
             recent_returns = []
             for i in range(-rps_window, 0):
-                if len(close_series) + i >= 1:
-                    ret = (float(close_series.iloc[i]) - float(close_series.iloc[i-1])) / float(close_series.iloc[i-1]) * 100.0 if float(close_series.iloc[i-1]) > 0 else 0
-                    recent_returns.append(ret)
-            if recent_returns:
-                rps_slope = (recent_returns[-1] - recent_returns[0]) / max(len(recent_returns) - 1, 1)
-                rps_slope_ok = rps_slope >= cfg.rps_slope_min
+                if len(close_series) + i >= 1 and len(close_series) + i - 1 >= 0:
+                    prev_close = float(close_series.iloc[i-1])
+                    curr_close = float(close_series.iloc[i])
+                    if prev_close > 0:
+                        ret = (curr_close - prev_close) / prev_close * 100.0
+                        recent_returns.append(ret)
+            
+            # 线性回归斜率：判断收益率是否在上升
+            if len(recent_returns) >= 2:
+                import numpy as np
+                x = np.arange(len(recent_returns))
+                y = np.array(recent_returns)
+                slope = np.polyfit(x, y, 1)[0]
+                rps_slope_ok = slope >= cfg.rps_slope_min
         
         if cfg.enable_rps_filter and rps_filter_active:
             momentum_rps_ok = (
@@ -1269,7 +1279,7 @@ def _analyze_accum_stage(df: pd.DataFrame, cfg: FunnelConfig) -> str | None:
 
     accum_base_low = period_low
 
-    # 条件 2: 均线胶着（尚未多头排列）
+    # 条件 2: 均线即将穿越（MA50 在 MA200 上下 5% 以内）
     ma_short = close.rolling(cfg.ma_short).mean()
     ma_long = close.rolling(cfg.ma_long).mean()
     last_ma_short = ma_short.iloc[-1]
@@ -1282,8 +1292,8 @@ def _analyze_accum_stage(df: pd.DataFrame, cfg: FunnelConfig) -> str | None:
     ):
         return None
 
-    ma_gap = abs(float(last_ma_short) - float(last_ma_long)) / float(last_ma_long)
-    if ma_gap > cfg.accum_ma_gap_max:
+    ma_gap_pct = (float(last_ma_short) - float(last_ma_long)) / float(last_ma_long) * 100.0
+    if not (-5.0 <= ma_gap_pct <= 5.0):
         return None
 
     # 条件 3: 量能萎缩

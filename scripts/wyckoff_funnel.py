@@ -506,6 +506,7 @@ def _analyze_benchmark_and_tune_cfg(
     if panic_reasons:
         regime = "CRASH"
     elif PANIC_REPAIR_ENABLE:
+        # 改进逻辑：支持连续反弹（前 1-2 天是 CRASH，最近 1-2 天反弹）
         prev_panic = (
             (main_prev_pct is not None and float(main_prev_pct) <= float(CRASH_MAIN_DAY_DROP_PCT))
             or (
@@ -520,7 +521,15 @@ def _analyze_benchmark_and_tune_cfg(
                 and float(small_today_pct) >= float(PANIC_REPAIR_SMALL_REBOUND_PCT)
             )
         )
-        if prev_panic and rebound_ok:
+        # 连续反弹：最近 2 日都反弹
+        continuous_rebound = False
+        if main_today_pct is not None and main_prev_pct is not None:
+            continuous_rebound = (
+                float(main_today_pct) >= float(PANIC_REPAIR_MAIN_REBOUND_PCT) * 0.5
+                and float(main_prev_pct) >= float(PANIC_REPAIR_MAIN_REBOUND_PCT) * 0.5
+            )
+        
+        if (prev_panic and rebound_ok) or continuous_rebound:
             regime = "PANIC_REPAIR"
             repair_reasons = [
                 f"prev_panic(main_prev={main_prev_pct}, small_prev={small_prev_pct})",
@@ -536,8 +545,8 @@ def _analyze_benchmark_and_tune_cfg(
         cfg.min_avg_amount_wan = max(cfg.min_avg_amount_wan, 18000.0)
         cfg.rs_min_long = max(cfg.rs_min_long, 4.0)
         cfg.rs_min_short = max(cfg.rs_min_short, 1.0)
-        cfg.rps_fast_min = max(cfg.rps_fast_min, 90.0)
-        cfg.rps_slow_min = max(cfg.rps_slow_min, 85.0)
+        cfg.rps_fast_min = max(cfg.rps_fast_min, 80.0)  # 改为 80.0（从 90.0）
+        cfg.rps_slow_min = max(cfg.rps_slow_min, 75.0)  # 改为 75.0（从 85.0）
     elif regime == "PANIC_REPAIR":
         cfg.min_avg_amount_wan = max(cfg.min_avg_amount_wan, 8000.0)
         cfg.rs_min_long = max(cfg.rs_min_long, 1.0)

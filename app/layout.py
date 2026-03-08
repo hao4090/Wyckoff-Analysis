@@ -196,17 +196,52 @@ h1, h2, h3 {
   background: #ffffff;
   border: 1px solid #e6e9f0;
   color: #344054;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   line-height: 1.25;
+  transition: color 120ms ease;
 }
 
 .market-signal-banner .ms-chip-label {
   color: #667085;
+  font-size: 0.78rem;
 }
 
 .market-signal-banner .ms-chip-value {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  font-size: 0.86rem;
+}
+
+.market-signal-banner .ms-chip-positive {
+  color: #067647;
+}
+
+.market-signal-banner .ms-chip-positive .ms-chip-label {
+  color: #039855;
+}
+
+.market-signal-banner .ms-chip-neutral {
+  color: #475467;
+}
+
+.market-signal-banner .ms-chip-neutral .ms-chip-label {
+  color: #667085;
+}
+
+.market-signal-banner .ms-chip-caution {
+  color: #c2410c;
+}
+
+.market-signal-banner .ms-chip-caution .ms-chip-label {
+  color: #ea580c;
+}
+
+.market-signal-banner .ms-chip-negative {
+  color: #b42318;
+}
+
+.market-signal-banner .ms-chip-negative .ms-chip-label {
+  color: #d92d20;
 }
 
 .market-signal-banner .ms-body {
@@ -254,6 +289,51 @@ def _benchmark_regime_cn(regime: str) -> str:
     return mapping.get(str(regime or "").strip().upper(), "待确认")
 
 
+def _benchmark_chip_tone(regime: str) -> str:
+    normalized = str(regime or "").strip().upper()
+    if normalized == "RISK_ON":
+        return "positive"
+    if normalized == "NEUTRAL":
+        return "neutral"
+    if normalized == "RISK_OFF":
+        return "caution"
+    if normalized in {"CRASH", "BLACK_SWAN"}:
+        return "negative"
+    return "neutral"
+
+
+def _signed_chip_tone(raw) -> str:
+    try:
+        if raw is None or str(raw).strip() == "":
+            return "neutral"
+        value = float(raw)
+    except Exception:
+        return "neutral"
+    if value > 0:
+        return "positive"
+    if value < 0:
+        return "negative"
+    return "neutral"
+
+
+def _vix_chip_tone(raw) -> str:
+    try:
+        if raw is None or str(raw).strip() == "":
+            return "neutral"
+        value = float(raw)
+    except Exception:
+        return "neutral"
+    if value >= 15:
+        return "negative"
+    if value >= 8:
+        return "caution"
+    if value > 0:
+        return "caution"
+    if value < 0:
+        return "positive"
+    return "neutral"
+
+
 def _render_market_signal_banner() -> None:
     row = load_latest_market_signal_daily()
     if not isinstance(row, dict):
@@ -262,7 +342,8 @@ def _render_market_signal_banner() -> None:
     tone = str(row.get("banner_tone", "谨慎") or "谨慎").strip()
     title = str(row.get("banner_title", "") or "").strip()
     body = str(row.get("banner_message", "") or "").strip()
-    regime = _benchmark_regime_cn(str(row.get("benchmark_regime", "") or ""))
+    benchmark_regime_raw = str(row.get("benchmark_regime", "") or "")
+    regime = _benchmark_regime_cn(benchmark_regime_raw)
     main_close = row.get("main_index_close")
     a50_close = row.get("a50_close")
     a50_pct = row.get("a50_pct_chg")
@@ -286,18 +367,18 @@ def _render_market_signal_banner() -> None:
             return "--"
 
     chips = [
-        ("大盘水温（上证）", f"{regime} {_fmt_plain(main_close)}"),
-        ("A50（盘前风向标）", f"{_fmt_plain(a50_close)} / {_fmt_pct(a50_pct)}"),
-        ("VIX（恐慌指数）", f"{_fmt_plain(vix_close)} / {_fmt_pct(vix_pct)}"),
+        ("大盘水温（上证）", f"{regime} {_fmt_plain(main_close)}", _benchmark_chip_tone(benchmark_regime_raw)),
+        ("A50（盘前风向标）", f"{_fmt_plain(a50_close)} / {_fmt_pct(a50_pct)}", _signed_chip_tone(a50_pct)),
+        ("VIX（恐慌指数）", f"{_fmt_plain(vix_close)} / {_fmt_pct(vix_pct)}", _vix_chip_tone(vix_pct)),
     ]
     chips_html = "".join(
         (
-            '<span class="ms-chip">'
+            f'<span class="ms-chip ms-chip-{html.escape(chip_tone)}">'
             f'<span class="ms-chip-label">{html.escape(label)}</span>'
             f'<span class="ms-chip-value">{html.escape(value)}</span>'
             "</span>"
         )
-        for label, value in chips
+        for label, value, chip_tone in chips
     )
     st.markdown(
         f"""

@@ -2,8 +2,8 @@ name: Premarket Risk
 
 on:
   schedule:
-    # 北京时间 07:30（UTC+8）= UTC 前一日 23:30，周一到周五盘前执行
-    - cron: "30 23 * * 0-4"
+    # 北京时间 07:55（UTC+8）= UTC 前一日 23:55，周一到周五盘前执行
+    - cron: "55 23 * * 0-4"
   workflow_dispatch:
 
 concurrency:

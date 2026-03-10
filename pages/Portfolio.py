@@ -26,7 +26,7 @@ TABLE_PORTFOLIOS = "portfolios"
 TABLE_POSITIONS = "portfolio_positions"
 TABLE_TRADE_ORDERS = "trade_orders"
 EDIT_BLACKOUT_WINDOWS = (
-    ((7, 25), (7, 35), "盘前风控窗口"),
+    ((7, 50), (8, 0), "盘前风控窗口"),
     ((18, 20), (18, 30), "晚间再平衡窗口"),
 )
 

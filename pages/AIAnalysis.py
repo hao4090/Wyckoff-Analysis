@@ -228,6 +228,15 @@ with content_col:
 
     if active_result:
         st.subheader("📄 深度研报")
+        
+        ok_status = active_result.get("ok", True)
+        if not ok_status:
+            err_msg = active_result.get("error") or active_result.get("reason") or "未知错误"
+            st.error(f"后台研报生成失败：\n\n{err_msg}")
+        
         if active_result.get("preview_only"):
             st.caption("当前结果来自输入预演模式。")
-        st.markdown(str(active_result.get("report_text", "") or ""))
+            
+        report_text = str(active_result.get("report_text", "") or "")
+        if report_text:
+            st.markdown(report_text)

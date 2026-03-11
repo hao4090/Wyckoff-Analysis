@@ -246,9 +246,11 @@ def main() -> int:
 
     _write_result(args.output, base_result)
     print(
-        f"[web_background_job] ok kind={args.job_kind} request_id={args.request_id} "
+        f"[web_background_job] finished kind={args.job_kind} request_id={args.request_id} "
         f"user_id={requested_by_user_id or '-'}"
     )
+    if not base_result.get("ok", True):
+        return 1
     return 0
 
 

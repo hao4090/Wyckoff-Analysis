@@ -196,7 +196,7 @@ def load_latest_result(
     per_page: int = 10,
 ) -> tuple[WorkflowRun | None, dict[str, Any] | None]:
     for run in list_recent_runs(per_page=per_page):
-        if run.status != "completed" or run.conclusion != "success":
+        if run.status != "completed" or run.conclusion not in ("success", "failure"):
             continue
         result = load_result_json_for_run(run.run_id)
         if not result:

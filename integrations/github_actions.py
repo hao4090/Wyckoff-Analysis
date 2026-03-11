@@ -14,12 +14,13 @@ import streamlit as st
 
 DEFAULT_OWNER = "YoungCan-Wang"
 DEFAULT_REPO = "Wyckoff-Analysis"
-DEFAULT_REF = "main"
+DEFAULT_REF = "feature/visible"
 DEFAULT_WORKFLOW_FILE = "web_quant_jobs.yml"
 
 
 @dataclass
 class WorkflowRun:
+
     run_id: int
     status: str
     conclusion: str | None

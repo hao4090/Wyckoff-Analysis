@@ -1,9 +1,38 @@
+import json
 import os
 import streamlit as st
 from supabase import create_client, Client
 from postgrest.exceptions import APIError
 from core.constants import TABLE_USER_SETTINGS
 from integrations.llm_client import OPENAI_COMPATIBLE_BASE_URLS
+
+CUSTOM_PROVIDER_KEYS = ("zhipu", "minimax", "qwen", "kimi", "volcengine")
+
+
+def _parse_custom_providers(raw_value) -> dict:
+    if isinstance(raw_value, dict):
+        return raw_value
+    if isinstance(raw_value, str):
+        text = raw_value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _pick_custom_provider_value(custom_map: dict, provider: str, *keys: str) -> str:
+    info = custom_map.get(provider) or {}
+    if not isinstance(info, dict):
+        return ""
+    for key in keys:
+        value = str(info.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def reset_user_settings_state() -> None:
@@ -16,6 +45,7 @@ def reset_user_settings_state() -> None:
     st.session_state.gemini_api_key = ""
     st.session_state.tushare_token = ""
     st.session_state.gemini_model = "gemini-3.1-flash-lite-preview"
+    st.session_state.gemini_base_url = ""
     st.session_state.tg_bot_token = ""
     st.session_state.tg_chat_id = ""
 
@@ -35,6 +65,12 @@ def reset_user_settings_state() -> None:
     st.session_state.qwen_api_key = ""
     st.session_state.qwen_model = ""
     st.session_state.qwen_base_url = OPENAI_COMPATIBLE_BASE_URLS.get("qwen", "")
+    st.session_state.kimi_api_key = ""
+    st.session_state.kimi_model = ""
+    st.session_state.kimi_base_url = OPENAI_COMPATIBLE_BASE_URLS.get("kimi", "")
+    st.session_state.volcengine_api_key = ""
+    st.session_state.volcengine_model = ""
+    st.session_state.volcengine_base_url = OPENAI_COMPATIBLE_BASE_URLS.get("volcengine", "")
 
 
 def _get_supabase_client_base() -> Client:
@@ -106,6 +142,7 @@ def load_user_settings(user_id: str):
 
         if response.data and len(response.data) > 0:
             settings = response.data[0]
+            custom_providers = _parse_custom_providers(settings.get("custom_providers"))
             # 通知类
             st.session_state.feishu_webhook = settings.get("feishu_webhook") or ""
             st.session_state.wecom_webhook = settings.get("wecom_webhook") or ""
@@ -116,23 +153,12 @@ def load_user_settings(user_id: str):
             st.session_state.gemini_model = (
                 settings.get("gemini_model") or "gemini-3.1-flash-lite-preview"
             )
+            st.session_state.gemini_base_url = settings.get("gemini_base_url") or ""
             st.session_state.openai_api_key = settings.get("openai_api_key") or ""
             st.session_state.openai_model = settings.get("openai_model") or ""
             st.session_state.openai_base_url = (
                 settings.get("openai_base_url")
                 or OPENAI_COMPATIBLE_BASE_URLS.get("openai", "")
-            )
-            st.session_state.zhipu_api_key = settings.get("zhipu_api_key") or ""
-            st.session_state.zhipu_model = settings.get("zhipu_model") or ""
-            st.session_state.zhipu_base_url = (
-                settings.get("zhipu_base_url")
-                or OPENAI_COMPATIBLE_BASE_URLS.get("zhipu", "")
-            )
-            st.session_state.minimax_api_key = settings.get("minimax_api_key") or ""
-            st.session_state.minimax_model = settings.get("minimax_model") or ""
-            st.session_state.minimax_base_url = (
-                settings.get("minimax_base_url")
-                or OPENAI_COMPATIBLE_BASE_URLS.get("minimax", "")
             )
             st.session_state.deepseek_api_key = settings.get("deepseek_api_key") or ""
             st.session_state.deepseek_model = settings.get("deepseek_model") or ""
@@ -140,12 +166,22 @@ def load_user_settings(user_id: str):
                 settings.get("deepseek_base_url")
                 or OPENAI_COMPATIBLE_BASE_URLS.get("deepseek", "")
             )
-            st.session_state.qwen_api_key = settings.get("qwen_api_key") or ""
-            st.session_state.qwen_model = settings.get("qwen_model") or ""
-            st.session_state.qwen_base_url = (
-                settings.get("qwen_base_url")
-                or OPENAI_COMPATIBLE_BASE_URLS.get("qwen", "")
-            )
+            for provider in CUSTOM_PROVIDER_KEYS:
+                st.session_state[f"{provider}_api_key"] = (
+                    _pick_custom_provider_value(custom_providers, provider, "apikey", "api_key")
+                    or settings.get(f"{provider}_api_key")
+                    or ""
+                )
+                st.session_state[f"{provider}_model"] = (
+                    _pick_custom_provider_value(custom_providers, provider, "model")
+                    or settings.get(f"{provider}_model")
+                    or ""
+                )
+                st.session_state[f"{provider}_base_url"] = (
+                    _pick_custom_provider_value(custom_providers, provider, "baseurl", "base_url")
+                    or settings.get(f"{provider}_base_url")
+                    or OPENAI_COMPATIBLE_BASE_URLS.get(provider, "")
+                )
 
             # 其它
             st.session_state.tushare_token = settings.get("tushare_token") or ""
@@ -169,7 +205,32 @@ def save_user_settings(user_id: str, settings: dict):
         return True
     except APIError as e:
         print(f"Supabase API Error in save_user_settings: {e.code} - {e.message}")
-        return False
+        try:
+            supabase = get_supabase_client()
+            fallback = {"user_id": user_id, **settings}
+            changed = False
+
+            # 兼容 custom_providers 既可能是 jsonb（对象）也可能是 text（字符串）的库表定义
+            if isinstance(fallback.get("custom_providers"), dict):
+                fallback["custom_providers"] = json.dumps(
+                    fallback["custom_providers"], ensure_ascii=False
+                )
+                changed = True
+
+            # 兼容旧表结构（尚未添加这些列）时的兜底
+            for optional_key in ("custom_providers", "gemini_base_url"):
+                if optional_key in fallback and "column" in str(e.message or "").lower():
+                    fallback.pop(optional_key, None)
+                    changed = True
+
+            if not changed:
+                return False
+
+            supabase.table(TABLE_USER_SETTINGS).upsert(fallback).execute()
+            return True
+        except Exception as retry_err:
+            print(f"Retry save_user_settings failed: {retry_err}")
+            return False
     except Exception as e:
         print(f"Unexpected error in save_user_settings: {e}")
         return False

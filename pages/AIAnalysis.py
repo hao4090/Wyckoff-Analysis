@@ -33,18 +33,28 @@ PROVIDER_LABELS = {
     "minimax": "Minimax",
     "deepseek": "DeepSeek",
     "qwen": "Qwen",
+    "kimi": "Kimi",
+    "volcengine": "火山引擎",
 }
 
 
 def _get_provider_credentials(provider: str) -> tuple[str, str, str]:
     """根据 provider 从 session_state 取 api_key、model、base_url（OpenAI 兼容）。"""
     key_suffix = provider.lower()
-    api_key = (st.session_state.get(f"{key_suffix}_api_key") or "").strip()
-    model = (st.session_state.get(f"{key_suffix}_model") or "").strip()
+    env_prefix = key_suffix.upper()
+    api_key = (
+        (st.session_state.get(f"{key_suffix}_api_key") or "").strip()
+        or str(os.getenv(f"{env_prefix}_API_KEY", "") or "").strip()
+    )
+    model = (
+        (st.session_state.get(f"{key_suffix}_model") or "").strip()
+        or str(os.getenv(f"{env_prefix}_MODEL", "") or "").strip()
+    )
     base_url = ""
     if provider in OPENAI_COMPATIBLE_BASE_URLS:
         base_url = (
             st.session_state.get(f"{key_suffix}_base_url")
+            or os.getenv(f"{env_prefix}_BASE_URL")
             or OPENAI_COMPATIBLE_BASE_URLS.get(provider, "")
             or ""
         ).strip()
@@ -165,8 +175,19 @@ with content_col:
             key="ai_model_single",
             help="单股模式继续走本地轻量分析，不经过后台任务。",
         ).strip()
+        effective_single_base_url = base_url
+        if provider in OPENAI_COMPATIBLE_BASE_URLS:
+            single_base_url_input = st.text_input(
+                "Base URL（可选）",
+                value=base_url,
+                key=f"ai_single_base_url_{provider}",
+                help="留空时自动使用该供应商默认 Base URL。",
+            ).strip()
+            effective_single_base_url = single_base_url_input or OPENAI_COMPATIBLE_BASE_URLS.get(provider, "")
         if not api_key:
-            st.warning(f"单股模式需要 {PROVIDER_LABELS.get(provider, provider)} API Key，请先在设置页录入。")
+            st.warning(
+                f"单股模式需要 {PROVIDER_LABELS.get(provider, provider)} API Key，请先在设置页录入或配置环境变量。"
+            )
             st.page_link("pages/Settings.py", label="前往设置", icon="⚙️")
             st.stop()
         if provider == "gemini":
@@ -175,7 +196,7 @@ with content_col:
             provider,
             model or default_model or (GEMINI_MODELS[0] if provider == "gemini" else ""),
             api_key,
-            base_url,
+            effective_single_base_url,
         )
         st.stop()
 
@@ -200,10 +221,19 @@ with content_col:
         key=f"ai_model_batch_{batch_provider}",
         help="留空则优先使用你在设置页保存的对应供应商模型。",
     ).strip()
+    effective_batch_base_url = batch_base_url
     if batch_provider in OPENAI_COMPATIBLE_BASE_URLS:
-        st.caption(f"当前后台 Base URL：`{batch_base_url or '(empty)'}`（可在设置页修改）")
+        batch_base_url_input = st.text_input(
+            "后台 Base URL（可选）",
+            value=batch_base_url,
+            key=f"ai_batch_base_url_{batch_provider}",
+            help="留空时自动使用该供应商默认 Base URL。",
+        ).strip()
+        effective_batch_base_url = batch_base_url_input or OPENAI_COMPATIBLE_BASE_URLS.get(batch_provider, "")
     if not batch_api_key:
-        st.warning(f"后台批量模式需要 {PROVIDER_LABELS.get(batch_provider, batch_provider)} API Key，请先在设置页录入。")
+        st.warning(
+            f"后台批量模式需要 {PROVIDER_LABELS.get(batch_provider, batch_provider)} API Key，请先在设置页录入或配置环境变量。"
+        )
     preview_only = st.checkbox("仅生成输入预演，不真正调用模型", value=False)
 
     selected_symbols_info: list[dict] = []
@@ -277,6 +307,7 @@ with content_col:
             "benchmark_context": benchmark_context,
             "provider": batch_provider,
             "model": model_override,
+            "base_url": effective_batch_base_url,
             "preview_only": preview_only,
         }
         request_id = submit_background_job("batch_ai_report", payload, state_key=STATE_KEY)

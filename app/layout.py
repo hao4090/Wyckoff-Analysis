@@ -53,18 +53,42 @@ def init_session_state() -> None:
     _set_default("gemini_model", "gemini-3.1-flash-lite-preview")
     if st.session_state.gemini_model is None:
         st.session_state.gemini_model = "gemini-3.1-flash-lite-preview"
-    for key in ("openai_api_key", "openai_model", "zhipu_api_key", "zhipu_model",
-                "minimax_api_key", "minimax_model", "deepseek_api_key", "deepseek_model",
-                "qwen_api_key", "qwen_model"):
+    for key in (
+        "openai_api_key",
+        "openai_model",
+        "zhipu_api_key",
+        "zhipu_model",
+        "minimax_api_key",
+        "minimax_model",
+        "deepseek_api_key",
+        "deepseek_model",
+        "qwen_api_key",
+        "qwen_model",
+        "kimi_api_key",
+        "kimi_model",
+        "volcengine_api_key",
+        "volcengine_model",
+    ):
         _set_default(key, "" if "model" not in key else "")
-    for k in ("openai_model", "zhipu_model", "minimax_model", "deepseek_model", "qwen_model"):
+    for k in (
+        "openai_model",
+        "zhipu_model",
+        "minimax_model",
+        "deepseek_model",
+        "qwen_model",
+        "kimi_model",
+        "volcengine_model",
+    ):
         if st.session_state.get(k) is None:
             st.session_state[k] = ""
+    _set_default("gemini_base_url", "")
     _set_default("openai_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("openai", ""))
     _set_default("zhipu_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("zhipu", ""))
     _set_default("minimax_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("minimax", ""))
     _set_default("deepseek_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("deepseek", ""))
     _set_default("qwen_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("qwen", ""))
+    _set_default("kimi_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("kimi", ""))
+    _set_default("volcengine_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("volcengine", ""))
 
     _set_default("tg_bot_token", "")
     if st.session_state.tg_bot_token is None:

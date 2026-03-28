@@ -29,10 +29,22 @@ with content_col:
 
     # 兼容旧会话：新增字段可能尚未初始化，先补默认值，避免 AttributeError。
     st.session_state.setdefault("openai_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("openai", ""))
+    st.session_state.setdefault("gemini_base_url", "")
     st.session_state.setdefault("zhipu_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("zhipu", ""))
     st.session_state.setdefault("minimax_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("minimax", ""))
     st.session_state.setdefault("deepseek_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("deepseek", ""))
     st.session_state.setdefault("qwen_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("qwen", ""))
+    st.session_state.setdefault("kimi_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("kimi", ""))
+    st.session_state.setdefault("volcengine_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("volcengine", ""))
+
+    for key in (
+        "zhipu_api_key", "zhipu_model",
+        "minimax_api_key", "minimax_model",
+        "qwen_api_key", "qwen_model",
+        "kimi_api_key", "kimi_model",
+        "volcengine_api_key", "volcengine_model",
+    ):
+        st.session_state.setdefault(key, "")
 
     # 顶部展示 user_id，方便复制
     with st.expander("🔑 账户信息", expanded=True):
@@ -46,6 +58,33 @@ with content_col:
             st.error("用户未登录，无法保存配置")
             return
 
+        custom_providers = {
+            "zhipu": {
+                "apikey": st.session_state.zhipu_api_key,
+                "baseurl": st.session_state.zhipu_base_url,
+                "model": st.session_state.zhipu_model,
+            },
+            "minimax": {
+                "apikey": st.session_state.minimax_api_key,
+                "baseurl": st.session_state.minimax_base_url,
+                "model": st.session_state.minimax_model,
+            },
+            "qwen": {
+                "apikey": st.session_state.qwen_api_key,
+                "baseurl": st.session_state.qwen_base_url,
+                "model": st.session_state.qwen_model,
+            },
+            "kimi": {
+                "apikey": st.session_state.kimi_api_key,
+                "baseurl": st.session_state.kimi_base_url,
+                "model": st.session_state.kimi_model,
+            },
+            "volcengine": {
+                "apikey": st.session_state.volcengine_api_key,
+                "baseurl": st.session_state.volcengine_base_url,
+                "model": st.session_state.volcengine_model,
+            },
+        }
         settings = {
             # 通知
             "feishu_webhook": st.session_state.feishu_webhook,
@@ -54,21 +93,14 @@ with content_col:
             # 大模型
             "gemini_api_key": st.session_state.gemini_api_key,
             "gemini_model": st.session_state.gemini_model,
+            "gemini_base_url": st.session_state.gemini_base_url,
             "openai_api_key": st.session_state.openai_api_key,
             "openai_model": st.session_state.openai_model,
             "openai_base_url": st.session_state.openai_base_url,
-            "zhipu_api_key": st.session_state.zhipu_api_key,
-            "zhipu_model": st.session_state.zhipu_model,
-            "zhipu_base_url": st.session_state.zhipu_base_url,
-            "minimax_api_key": st.session_state.minimax_api_key,
-            "minimax_model": st.session_state.minimax_model,
-            "minimax_base_url": st.session_state.minimax_base_url,
             "deepseek_api_key": st.session_state.deepseek_api_key,
             "deepseek_model": st.session_state.deepseek_model,
             "deepseek_base_url": st.session_state.deepseek_base_url,
-            "qwen_api_key": st.session_state.qwen_api_key,
-            "qwen_model": st.session_state.qwen_model,
-            "qwen_base_url": st.session_state.qwen_base_url,
+            "custom_providers": custom_providers,
             # 其它
             "tushare_token": st.session_state.tushare_token,
             "tg_bot_token": st.session_state.tg_bot_token,
@@ -145,6 +177,12 @@ with content_col:
                 value=st.session_state.gemini_model,
                 placeholder="gemini-3.1-flash-lite-preview",
                 help="例如：gemini-3.1-flash-lite-preview、gemini-2.5-flash 等。",
+            )
+            new_gemini_base_url = st.text_input(
+                "Gemini Base URL（可选）",
+                value=st.session_state.gemini_base_url,
+                placeholder="留空使用官方默认",
+                help="仅用于经代理网关转发 Gemini 的场景；普通情况下保持留空。",
             )
 
             st.markdown("---")
@@ -243,9 +281,48 @@ with content_col:
                 placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1",
             )
 
+            st.markdown("---")
+            st.markdown("**Kimi (Moonshot)**")
+            new_kimi_key = st.text_input(
+                "Kimi API Key",
+                value=st.session_state.kimi_api_key,
+                type="password",
+                placeholder="sk-...",
+            )
+            new_kimi_model = st.text_input(
+                "Kimi 默认模型",
+                value=st.session_state.kimi_model,
+                placeholder="moonshot-v1-8k",
+            )
+            new_kimi_base_url = st.text_input(
+                "Kimi Base URL",
+                value=st.session_state.kimi_base_url,
+                placeholder="https://api.moonshot.cn/v1",
+            )
+
+            st.markdown("---")
+            st.markdown("**火山引擎 (Volcengine Ark)**")
+            new_volc_key = st.text_input(
+                "火山引擎 API Key",
+                value=st.session_state.volcengine_api_key,
+                type="password",
+                placeholder="xxxxx",
+            )
+            new_volc_model = st.text_input(
+                "火山引擎默认模型",
+                value=st.session_state.volcengine_model,
+                placeholder="ep-xxxxxx",
+            )
+            new_volc_base_url = st.text_input(
+                "火山引擎 Base URL",
+                value=st.session_state.volcengine_base_url,
+                placeholder="https://ark.cn-beijing.volces.com/api/v3",
+            )
+
             if st.button("💾 保存 AI 配置", key="save_ai"):
                 st.session_state.gemini_api_key = new_gemini_key
                 st.session_state.gemini_model = new_gemini_model
+                st.session_state.gemini_base_url = new_gemini_base_url
                 st.session_state.openai_api_key = new_openai_key
                 st.session_state.openai_model = new_openai_model
                 st.session_state.openai_base_url = new_openai_base_url
@@ -261,6 +338,12 @@ with content_col:
                 st.session_state.qwen_api_key = new_qwen_key
                 st.session_state.qwen_model = new_qwen_model
                 st.session_state.qwen_base_url = new_qwen_base_url
+                st.session_state.kimi_api_key = new_kimi_key
+                st.session_state.kimi_model = new_kimi_model
+                st.session_state.kimi_base_url = new_kimi_base_url
+                st.session_state.volcengine_api_key = new_volc_key
+                st.session_state.volcengine_model = new_volc_model
+                st.session_state.volcengine_base_url = new_volc_base_url
                 on_save_settings()
 
         st.divider()

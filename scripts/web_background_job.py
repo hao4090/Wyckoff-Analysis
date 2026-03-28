@@ -156,11 +156,37 @@ def _resolve_model_credentials(payload: dict[str, Any]) -> tuple[str, str, str, 
         from integrations.supabase_portfolio import load_user_settings_admin
 
         settings = load_user_settings_admin(user_id) or {}
+        custom_providers = settings.get("custom_providers") or {}
+        if isinstance(custom_providers, str):
+            try:
+                custom_providers = json.loads(custom_providers)
+            except Exception:
+                custom_providers = {}
+        if not isinstance(custom_providers, dict):
+            custom_providers = {}
+
         api_key = str(settings.get(key_field, "") or "").strip()
         if not model:
             model = str(settings.get(model_field, "") or "").strip()
         if not base_url:
             base_url = str(settings.get(base_url_field, "") or "").strip()
+
+        provider_entry = custom_providers.get(provider) or {}
+        if isinstance(provider_entry, dict):
+            if not api_key:
+                api_key = str(
+                    provider_entry.get("apikey")
+                    or provider_entry.get("api_key")
+                    or ""
+                ).strip()
+            if not model:
+                model = str(provider_entry.get("model") or "").strip()
+            if not base_url:
+                base_url = str(
+                    provider_entry.get("baseurl")
+                    or provider_entry.get("base_url")
+                    or ""
+                ).strip()
     if not api_key:
         api_key = str(os.getenv(env_api_key, "") or "").strip()
     if not api_key and provider == "gemini":

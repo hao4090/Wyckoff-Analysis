@@ -2,6 +2,10 @@
 """core/batch_report.py re-export 桥接测试。"""
 from __future__ import annotations
 
+import pytest
+
+akshare = pytest.importorskip("akshare", reason="akshare not installed")
+
 
 def test_bridge_exports_are_importable():
     """确认桥接模块能正常 import 所有公共 API。"""

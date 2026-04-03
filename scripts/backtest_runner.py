@@ -37,9 +37,9 @@ from core.sector_rotation import analyze_sector_rotation
 from integrations.data_source import fetch_index_hist, fetch_market_cap_map, fetch_sector_map, fetch_stock_hist
 from integrations.fetch_a_share_csv import get_stocks_by_board, _normalize_symbols
 from core.funnel_pipeline import (
-    _analyze_benchmark_and_tune_cfg as _tune_cfg_by_regime,
-    _calc_market_breadth as _calc_market_breadth_for_regime,
-    _rank_l3_candidates,
+    analyze_benchmark_and_tune_cfg as _tune_cfg_by_regime,
+    calc_market_breadth as _calc_market_breadth_for_regime,
+    rank_l3_candidates,
 )
 
 DEFAULT_HOLD_DAYS = 30  # 网格优化：30天夏普2.493 > 25天1.967 > 20天1.413
@@ -315,7 +315,7 @@ def _select_ai_input_codes(
         focus_sectors=result.top_sectors,
     )
     sector_rotation_map = (sector_rotation or {}).get("state_map", {}) or {}
-    l3_ranked_symbols, _ = _rank_l3_candidates(
+    l3_ranked_symbols, _ = rank_l3_candidates(
         l3_symbols=result.layer3_symbols,
         df_map=day_df_map,
         sector_map=sector_map,

@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.backtester import run_backtest, _parse_date
+from core.backtester import run_backtest, parse_date
 
 # ── 默认参数空间（可通过环境变量 JSON 覆盖） ──
 
@@ -225,8 +225,8 @@ def main() -> int:
     parser.add_argument("--exit-mode", default="sltp", choices=["close_only", "sltp"])
     args = parser.parse_args()
 
-    start_dt = _parse_date(args.start)
-    end_dt = _parse_date(args.end)
+    start_dt = parse_date(args.start)
+    end_dt = parse_date(args.end)
     snapshot = Path(args.snapshot_dir).resolve() if args.snapshot_dir.strip() else None
 
     result_df = run_sensitivity(

@@ -149,7 +149,7 @@ jobs:
 
               try:
                   raw = None
-                  # 优先从 Supabase 缓存读取（cache_only=True：只读缓存，不回 tushare 补缺口）
+                  # 1) Supabase 缓存优先（cache_only：不触发 tushare 补缺口）
                   try:
                       raw = get_stock_hist_cached(
                           sym, prefetch_start, end_s,
@@ -157,16 +157,19 @@ jobs:
                       )
                   except Exception:
                       pass
-                  # 仅当缓存完全无数据时才 fallback 到 tushare
+                  # 2) 缓存无数据才 fallback 到 tushare（新股/首次入库）
                   if raw is None or raw.empty:
-                      raw = fetch_stock_hist(sym, prefetch_start, end_s, adjust='qfq')
+                      try:
+                          raw = fetch_stock_hist(sym, prefetch_start, end_s, adjust='qfq')
+                      except Exception:
+                          pass
                   if raw is not None and not raw.empty:
                       df = normalize_hist_from_fetch(raw)
                       df['symbol'] = sym
                       return sym, df, None
               except Exception as e:
                   return sym, None, str(e)
-              return sym, None, 'empty'
+              return sym, None, 'no_data'
 
           # ---- 主拉取（2 线程 + 限流 + 1 轮重试） ----
           all_frames = []
@@ -221,8 +224,18 @@ jobs:
               for item in fail_samples[:10]:
                   print(f'  - {item}')
 
-          # 基准指数
-          bench_main = fetch_index_hist('000001', prefetch_start, end_s)
+          # 基准指数（akshare 优先 → tushare 兜底）
+          bench_main = None
+          try:
+              from integrations.data_source import _fetch_index_akshare
+              bench_main = _fetch_index_akshare('000001', prefetch_start, end_s)
+              print(f'[snapshot] 大盘指数 via akshare: {len(bench_main)} rows')
+          except Exception as e1:
+              print(f'[snapshot] akshare 大盘失败: {e1}, fallback fetch_index_hist')
+              try:
+                  bench_main = fetch_index_hist('000001', prefetch_start, end_s)
+              except Exception as e2:
+                  print(f'[snapshot] 大盘指数全部失败（不阻塞）: {e2}')
 
           # 导出快照
           snap_dir = Path('snapshot_data')

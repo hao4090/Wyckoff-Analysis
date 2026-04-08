@@ -277,12 +277,25 @@ with content_col:
         p_state = st.session_state.get(PIPELINE_STATE_KEY)
         p_running = _pipeline_is_running(p_state)
 
+        # 提前检查 key 是否可用（session_state 或 Supabase 或环境变量）
+        _has_key = bool(p_api_key)
+        if not _has_key:
+            try:
+                from integrations.supabase_portfolio import load_user_settings_admin
+                _chk_settings = load_user_settings_admin(_uid) or {}
+                _has_key = bool(str(_chk_settings.get(f"{p_provider}_api_key", "") or "").strip())
+            except Exception:
+                pass
+        if not _has_key:
+            import os as _os
+            _has_key = bool(_os.getenv(f"{p_provider.upper()}_API_KEY", "").strip())
+
         if p_running:
             st.button("🔄 管线运行中...", disabled=True, use_container_width=True)
         else:
-            if not p_api_key:
-                st.warning(f"请配置 {PROVIDER_LABELS.get(p_provider, p_provider)} API Key。")
-            btn_disabled = (not p_api_key) or (not _allowed)
+            if not _has_key:
+                st.warning(f"请配置 {PROVIDER_LABELS.get(p_provider, p_provider)} API Key（设置页保存或在模型配置中输入）。")
+            btn_disabled = (not _has_key) or (not _allowed)
             if not _allowed:
                 st.warning(f"今日管线额度已用完（{_used}/{_limit}），明天再来。")
             if st.button("🚀 一键运行完整管线", type="primary", disabled=btn_disabled, use_container_width=True):
@@ -292,11 +305,22 @@ with content_col:
                     st.error(f"额度已用完（{used2}/{lim2}），请明天再试。")
                 else:
                     increment_daily_usage(_uid, "full_pipeline")
+                    # 兜底：如果页面 widget 没拿到 key，从 Supabase 再读一次
+                    _final_api_key = p_api_key
+                    if not _final_api_key:
+                        try:
+                            from integrations.supabase_portfolio import load_user_settings_admin
+                            _settings = load_user_settings_admin(_uid) or {}
+                            _final_api_key = str(
+                                _settings.get(f"{p_provider}_api_key", "") or ""
+                            ).strip()
+                        except Exception:
+                            pass
                     payload = {
                         "user_id": _uid,
                         "provider": p_provider,
                         "model": p_model,
-                        "api_key": p_api_key,
+                        "api_key": _final_api_key,
                         "base_url": p_base_url,
                         "webhook_url": (p_webhook or "").strip(),
                         "skip_step4": p_skip_step4,

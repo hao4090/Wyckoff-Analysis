@@ -96,9 +96,9 @@ def init_session_state() -> None:
     if st.session_state.tg_chat_id is None:
         st.session_state.tg_chat_id = ""
 
-    # 从 localStorage 恢复 token（刷新页面后登录态保持）
-    # st_javascript 是异步的：首次渲染返回 0，第二次 rerun 才拿到真值。
-    # 因此最多尝试 2 次（_token_restore_pass 从 0→1→2），第 1 次触发 rerun 等 JS 执行。
+    # 从 Cookie / localStorage 恢复 token（刷新页面后登录态保持）
+    # Cookie 通道（st.context.cookies）是同步的，首次渲染即可拿到值，无需 rerun。
+    # localStorage 通道（st_javascript）是异步的，需 rerun 重试，作为 fallback 保留。
     access = st.session_state.get("access_token") or ""
     refresh = st.session_state.get("refresh_token") or ""
     restore_pass = int(st.session_state.get("_token_restore_pass", 0))
@@ -112,7 +112,8 @@ def init_session_state() -> None:
             else:
                 st.session_state["_token_restore_pass"] = restore_pass + 1
                 if restore_pass == 0:
-                    # 第一次拿到 0 占位符，触发 rerun 等待 JS 返回真实值
+                    # Cookie 未命中，可能是旧用户只有 localStorage；
+                    # 触发 rerun 等 st_javascript iframe 加载完毕
                     st.rerun()
         except Exception:
             st.session_state["_token_restore_pass"] = 2  # 出错不再重试

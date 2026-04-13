@@ -1,78 +1,48 @@
 # -*- coding: utf-8 -*-
 """
-Token 持久化 — Cookie（主） + localStorage（兼容）双通道。
+Token 持久化 — 服务端缓存 + URL query_params 双通道。
 
-写入时：同时写 Cookie 和 localStorage。
-读取时：优先用 st.context.cookies 同步读 Cookie（无 iframe 依赖），
-        fallback 到 st_javascript 读 localStorage（兼容旧 token）。
-清除时：同时清两者。
+写入时：token 存入服务端 cache_resource（进程级内存），session_key 写入 URL query_params。
+读取时：从 URL query_params 取 session_key → 查服务端缓存 → 恢复 token。
+清除时：删缓存 + 清 query_params。
 
-重要：st_javascript 内部将代码包装成 (async () => {return <code>})()，
-因此多条语句必须用逗号表达式或 IIFE 包裹，否则 return 只作用于第一条。
+不依赖任何浏览器端 JavaScript，彻底规避 iframe 沙箱限制。
+服务端重启后缓存丢失，用户需重新登录（可接受）。
 """
 from __future__ import annotations
 
-import json
-import urllib.parse
+import secrets
+import time
 
-_STORAGE_KEY_ACCESS = "akshare_access_token"
-_STORAGE_KEY_REFRESH = "akshare_refresh_token"
+import streamlit as st
 
-_COOKIE_KEY_ACCESS = "wyckoff_access_token"
-_COOKIE_KEY_REFRESH = "wyckoff_refresh_token"
-_COOKIE_MAX_AGE = 604800  # 7 天
+
+_QP_KEY = "sk"           # URL 里的 query param 名称
+_MAX_ENTRIES = 500        # 最大缓存条目（防内存泄漏）
+_ENTRY_TTL = 7 * 86400   # 7 天过期
 
 
 # ---------------------------------------------------------------------------
-# Restore (read)
+# 服务端 token 缓存（进程级，st.cache_resource 保证跨 session 共享）
 # ---------------------------------------------------------------------------
 
-def _restore_from_cookies() -> tuple[str | None, str | None]:
-    """从 Cookie 同步读取 token（st.context.cookies，无 iframe 时序问题）。"""
-    try:
-        import streamlit as st
-        cookies = st.context.cookies
-        access = urllib.parse.unquote(cookies.get(_COOKIE_KEY_ACCESS) or "").strip()
-        refresh = urllib.parse.unquote(cookies.get(_COOKIE_KEY_REFRESH) or "").strip()
-        if access and refresh:
-            return (access, refresh)
-    except Exception:
-        pass
-    return (None, None)
+@st.cache_resource
+def _get_token_store() -> dict:
+    """全局 token 缓存：{session_key: {access_token, refresh_token, ts}}"""
+    return {}
 
 
-def _restore_from_localstorage() -> tuple[str | None, str | None]:
-    """从 localStorage 异步读取 token（旧通道 fallback）。"""
-    try:
-        from streamlit_javascript import st_javascript
-
-        # st_javascript 包装为 (async () => {return <code>})()
-        # 所以这里只能有一条表达式
-        js = (
-            "JSON.stringify({"
-            f'access_token: localStorage.getItem("{_STORAGE_KEY_ACCESS}") || "", '
-            f'refresh_token: localStorage.getItem("{_STORAGE_KEY_REFRESH}") || ""'
-            "})"
-        )
-        result = st_javascript(js)
-        if not result or not isinstance(result, str) or result == "0":
-            return (None, None)
-        data = json.loads(result)
-        access = (data.get("access_token") or "").strip()
-        refresh = (data.get("refresh_token") or "").strip()
-        if access and refresh:
-            return (access, refresh)
-    except Exception:
-        pass
-    return (None, None)
-
-
-def restore_tokens_from_storage() -> tuple[str | None, str | None]:
-    """恢复 token：优先 Cookie（同步），fallback localStorage（异步）。"""
-    access, refresh = _restore_from_cookies()
-    if access and refresh:
-        return (access, refresh)
-    return _restore_from_localstorage()
+def _cleanup_store(store: dict) -> None:
+    """淘汰过期和超量条目。"""
+    now = time.time()
+    expired = [k for k, v in store.items() if now - v.get("ts", 0) > _ENTRY_TTL]
+    for k in expired:
+        store.pop(k, None)
+    # 超量时按时间淘汰最旧的
+    if len(store) > _MAX_ENTRIES:
+        sorted_keys = sorted(store, key=lambda k: store[k].get("ts", 0))
+        for k in sorted_keys[: len(store) - _MAX_ENTRIES]:
+            store.pop(k, None)
 
 
 # ---------------------------------------------------------------------------
@@ -80,38 +50,55 @@ def restore_tokens_from_storage() -> tuple[str | None, str | None]:
 # ---------------------------------------------------------------------------
 
 def persist_tokens_to_storage(access_token: str, refresh_token: str) -> bool:
-    """将 token 写入 Cookie + localStorage，成功返回 True。
-
-    st_javascript 将代码包装成 (async () => {return <code>})()，
-    所以用 IIFE 包裹多条语句，确保全部执行后再 return。
-    """
+    """将 token 存入服务端缓存，session_key 写入 URL query_params。"""
     if not access_token or not refresh_token:
         return False
     try:
-        from streamlit_javascript import st_javascript
+        store = _get_token_store()
+        _cleanup_store(store)
 
-        a = json.dumps(access_token)
-        r = json.dumps(refresh_token)
-
-        a_cookie = urllib.parse.quote(access_token, safe="")
-        r_cookie = urllib.parse.quote(refresh_token, safe="")
-
-        # 用 (() => { ... })() 包裹，确保所有语句都执行
-        js = (
-            "(() => {"
-            f'localStorage.setItem("{_STORAGE_KEY_ACCESS}", {a});'
-            f'localStorage.setItem("{_STORAGE_KEY_REFRESH}", {r});'
-            f'document.cookie = "{_COOKIE_KEY_ACCESS}={a_cookie}'
-            f";path=/;max-age={_COOKIE_MAX_AGE};SameSite=Lax\";"
-            f'document.cookie = "{_COOKIE_KEY_REFRESH}={r_cookie}'
-            f";path=/;max-age={_COOKIE_MAX_AGE};SameSite=Lax\";"
-            'return "ok";'
-            "})()"
-        )
-        st_javascript(js)
+        # 复用已有 session_key（避免每次登录生成新 key）
+        sk = st.session_state.get("_session_key") or secrets.token_urlsafe(24)
+        store[sk] = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "ts": time.time(),
+        }
+        st.session_state["_session_key"] = sk
+        st.query_params[_QP_KEY] = sk
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Restore (read)
+# ---------------------------------------------------------------------------
+
+def restore_tokens_from_storage() -> tuple[str | None, str | None]:
+    """从 URL query_params 读 session_key → 查服务端缓存 → 返回 token。"""
+    try:
+        sk = st.query_params.get(_QP_KEY)
+        if not sk:
+            return (None, None)
+        store = _get_token_store()
+        entry = store.get(sk)
+        if not entry:
+            return (None, None)
+        # 检查 TTL
+        if time.time() - entry.get("ts", 0) > _ENTRY_TTL:
+            store.pop(sk, None)
+            return (None, None)
+        access = (entry.get("access_token") or "").strip()
+        refresh = (entry.get("refresh_token") or "").strip()
+        if access and refresh:
+            # 续期
+            entry["ts"] = time.time()
+            st.session_state["_session_key"] = sk
+            return (access, refresh)
+    except Exception:
+        pass
+    return (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -119,20 +106,26 @@ def persist_tokens_to_storage(access_token: str, refresh_token: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def clear_tokens_from_storage() -> bool:
-    """清除 Cookie + localStorage 中的 token，成功返回 True。"""
+    """清除服务端缓存 + URL query_params。"""
     try:
-        from streamlit_javascript import st_javascript
-
-        js = (
-            "(() => {"
-            f'localStorage.removeItem("{_STORAGE_KEY_ACCESS}");'
-            f'localStorage.removeItem("{_STORAGE_KEY_REFRESH}");'
-            f'document.cookie = "{_COOKIE_KEY_ACCESS}=;path=/;max-age=0;SameSite=Lax";'
-            f'document.cookie = "{_COOKIE_KEY_REFRESH}=;path=/;max-age=0;SameSite=Lax";'
-            'return "ok";'
-            "})()"
-        )
-        st_javascript(js)
+        sk = st.session_state.get("_session_key") or st.query_params.get(_QP_KEY)
+        if sk:
+            store = _get_token_store()
+            store.pop(sk, None)
+        if _QP_KEY in st.query_params:
+            del st.query_params[_QP_KEY]
+        st.session_state.pop("_session_key", None)
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Query params 同步（确保跨页面导航后 URL 仍带 session_key）
+# ---------------------------------------------------------------------------
+
+def ensure_query_params_synced() -> None:
+    """如果 session_state 有 session_key 但 URL 没有，补写 URL。"""
+    sk = st.session_state.get("_session_key")
+    if sk and st.query_params.get(_QP_KEY) != sk:
+        st.query_params[_QP_KEY] = sk

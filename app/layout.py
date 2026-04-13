@@ -3,7 +3,7 @@ import html
 import streamlit as st
 
 from app.auth_component import check_auth, login_form
-from core.token_storage import restore_tokens_from_storage, persist_tokens_to_storage
+from core.token_storage import restore_tokens_from_storage, persist_tokens_to_storage, ensure_query_params_synced
 from integrations.supabase_market_signal import compose_market_banner, load_latest_market_signal_daily
 from integrations.llm_client import DEFAULT_GEMINI_MODEL, OPENAI_COMPATIBLE_BASE_URLS
 
@@ -96,53 +96,22 @@ def init_session_state() -> None:
     if st.session_state.tg_chat_id is None:
         st.session_state.tg_chat_id = ""
 
-    # 从 Cookie / localStorage 恢复 token（刷新页面后登录态保持）
-    # Cookie 通道（st.context.cookies）是同步的，首次渲染即可拿到值，无需 rerun。
-    # localStorage 通道（st_javascript）是异步的，需 rerun 重试，作为 fallback 保留。
+    # 从服务端缓存恢复 token（刷新页面后登录态保持）
+    # 原理：token 存在 st.cache_resource（进程级内存），session_key 存在 URL query_params。
+    # F5 刷新时 query_params 保留 → 用 session_key 查缓存 → 恢复 token。全同步，无需 rerun。
     access = st.session_state.get("access_token") or ""
     refresh = st.session_state.get("refresh_token") or ""
-    restore_pass = int(st.session_state.get("_token_restore_pass", 0))
-    if (not access or not refresh) and restore_pass < 2:
+    if not access or not refresh:
         try:
             restored_access, restored_refresh = restore_tokens_from_storage()
             if restored_access and restored_refresh:
                 st.session_state.access_token = restored_access
                 st.session_state.refresh_token = restored_refresh
-                st.session_state["_token_restore_pass"] = 2  # 成功，不再重试
-            else:
-                st.session_state["_token_restore_pass"] = restore_pass + 1
-                if restore_pass == 0:
-                    # Cookie 未命中，可能是旧用户只有 localStorage；
-                    # 触发 rerun 等 st_javascript iframe 加载完毕
-                    st.rerun()
         except Exception:
-            st.session_state["_token_restore_pass"] = 2  # 出错不再重试
+            pass
 
-    # ── Cookie 同步：确保 session_state 里的 token 写入 Cookie ──
-    _acc = st.session_state.get("access_token") or ""
-    _ref = st.session_state.get("refresh_token") or ""
-    if _acc and _ref and not st.session_state.get("_cookies_synced"):
-        persist_tokens_to_storage(_acc, _ref)
-        st.session_state["_cookies_synced"] = True
-
-    # ── 临时诊断（定位后删除） ──
-    import logging as _lg
-    _dbg = _lg.getLogger("auth_debug")
-    try:
-        _ck = dict(st.context.cookies)
-        _dbg.warning("[AUTH DEBUG] cookies keys=%s", list(_ck.keys()))
-        _dbg.warning("[AUTH DEBUG] session access_token=%s", "SET" if st.session_state.get("access_token") else "EMPTY")
-        _dbg.warning("[AUTH DEBUG] _cookies_synced=%s, _token_restore_pass=%s",
-                     st.session_state.get("_cookies_synced"), st.session_state.get("_token_restore_pass"))
-        # 在页面侧边栏展示诊断（方便直接看到）
-        with st.sidebar.expander("🔧 Auth Debug", expanded=False):
-            st.write("cookies keys:", list(_ck.keys()))
-            st.write("wyckoff_access_token in cookies:", bool(_ck.get("wyckoff_access_token")))
-            st.write("session access_token:", "SET" if st.session_state.get("access_token") else "EMPTY")
-            st.write("_cookies_synced:", st.session_state.get("_cookies_synced"))
-            st.write("_token_restore_pass:", st.session_state.get("_token_restore_pass"))
-    except Exception as _e:
-        _dbg.warning("[AUTH DEBUG] error: %s", _e)
+    # 确保 URL query_params 中带有 session_key（跨页面导航时保持）
+    ensure_query_params_synced()
 
 
 def _inject_base_ui_css() -> None:

@@ -932,8 +932,26 @@ def fetch_sector_map() -> dict[str, str]:
             _debug_source_fail("sector_cache_fallback_read", e)
         return {}
 
-    df = pro.stock_basic(fields="ts_code,industry")
+    try:
+        df = pro.stock_basic(fields="ts_code,industry")
+    except Exception as e:
+        _debug_source_fail("tushare_stock_basic", e)
+        # tushare 短时抖动时，退回本地缓存，避免上游任务整体失败
+        try:
+            if _SECTOR_CACHE.exists():
+                with open(_SECTOR_CACHE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as cache_e:
+            _debug_source_fail("sector_cache_error_fallback_read", cache_e)
+        return {}
+
     if df is None or df.empty:
+        try:
+            if _SECTOR_CACHE.exists():
+                with open(_SECTOR_CACHE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            _debug_source_fail("sector_cache_empty_fallback_read", e)
         return {}
 
     mapping = {}

@@ -294,15 +294,27 @@ def run_funnel_job(
 
     # 批量元数据
     print(f"[funnel] 加载行业映射...")
-    sector_map = fetch_sector_map()
+    try:
+        sector_map = fetch_sector_map()
+    except Exception as e:
+        print(f"[funnel] 行业映射加载失败，降级为空映射: {e}")
+        sector_map = {}
     print(f"[funnel] 加载市值数据...")
-    market_cap_map = fetch_market_cap_map()
+    try:
+        market_cap_map = fetch_market_cap_map()
+    except Exception as e:
+        print(f"[funnel] 市值数据加载失败，降级为空映射: {e}")
+        market_cap_map = {}
     if not market_cap_map:
         print(
             "[funnel] ⚠️ 市值数据为空（TUSHARE_TOKEN 可能缺失/失效），Layer1 将跳过市值过滤"
         )
     print(f"[funnel] 加载股票名称...")
-    name_map = _stock_name_map()
+    try:
+        name_map = _stock_name_map()
+    except Exception as e:
+        print(f"[funnel] 股票名称加载失败，降级为代码展示: {e}")
+        name_map = {}
 
     # 大盘基准
     bench_df = None
@@ -498,8 +510,16 @@ def run(
     """
     triggers, metrics = run_funnel_job()
     benchmark_context = metrics.get("benchmark_context", {}) or {}
-    name_map = _stock_name_map()
-    sector_map = fetch_sector_map()
+    try:
+        name_map = _stock_name_map()
+    except Exception as e:
+        print(f"[funnel] 股票名称加载失败，降级为代码展示: {e}")
+        name_map = {}
+    try:
+        sector_map = fetch_sector_map()
+    except Exception as e:
+        print(f"[funnel] 行业映射加载失败，降级为空映射: {e}")
+        sector_map = {}
     latest_close_map = metrics.get("latest_close_map", {}) or {}
     if latest_close_map:
         benchmark_context["latest_close_map"] = latest_close_map

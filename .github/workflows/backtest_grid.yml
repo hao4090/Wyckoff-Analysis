@@ -65,10 +65,10 @@ jobs:
       TZ: Asia/Shanghai
       FUNNEL_EXPORT_FULL_FETCH: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
@@ -290,7 +290,7 @@ jobs:
           "
 
       - name: Upload snapshot
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: backtest-snapshot
           path: snapshot_data/*
@@ -316,10 +316,10 @@ jobs:
       TZ: Asia/Shanghai
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
@@ -331,7 +331,7 @@ jobs:
           pip install -e .
 
       - name: Download snapshot
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: backtest-snapshot
           path: snapshot_data/
@@ -370,7 +370,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: backtest-grid-h${{ matrix.hold_days }}-sl${{ matrix.stop_loss }}-tp${{ matrix.take_profit }}-tr${{ matrix.trailing_stop }}-${{ github.run_number }}
           path: ${{ env.OUT_DIR }}/*
@@ -387,15 +387,15 @@ jobs:
     env:
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts/
           pattern: backtest-grid-*

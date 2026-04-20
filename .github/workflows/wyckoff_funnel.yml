@@ -16,8 +16,12 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+      # Qwen API 配置（通义千问）
+      QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+      QWEN_MODEL: qwen3.5-plus
+      QWEN_BASE_URL: https://coding.dashscope.aliyuncs.com/v1
+      # 指定使用 Qwen 作为默认 LLM 供应商
+      DEFAULT_LLM_PROVIDER: qwen
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       MY_PORTFOLIO_STATE: ${{ secrets.MY_PORTFOLIO_STATE }}
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -62,7 +66,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: daily-job-logs-${{ github.run_number }}
           path: logs/*.log

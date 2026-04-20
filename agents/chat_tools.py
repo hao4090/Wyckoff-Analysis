@@ -27,6 +27,20 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_NAME_MAP: dict[str, str] | None = None
+
+
+def _code_to_name(code: str) -> str:
+    """根据股票代码查名称，基于 get_all_stocks() 缓存。"""
+    global _NAME_MAP
+    if _NAME_MAP is None:
+        try:
+            from integrations.fetch_a_share_csv import get_all_stocks
+            _NAME_MAP = {s["code"]: s["name"] for s in get_all_stocks()}
+        except Exception:
+            _NAME_MAP = {}
+    return _NAME_MAP.get(code, code)
+
 
 # ---------------------------------------------------------------------------
 # 用户凭据：从 Supabase 实时获取 + 进程内短期缓存
@@ -111,46 +125,31 @@ def _ensure_tushare_token(tool_context: ToolContext | None) -> None:
 # ---------------------------------------------------------------------------
 
 def search_stock_by_name(keyword: str, tool_context: ToolContext) -> list[dict]:
-    """根据关键词搜索 A 股股票，支持名称、代码、拼音首字母模糊搜索。
+    """根据关键词搜索 A 股股票，支持名称和代码双向模糊搜索。
 
     Args:
-        keyword: 搜索关键词，如 "宁德" 或 "300750" 或 "gzmt"
+        keyword: 搜索关键词，如 "宁德" 或 "300750" 或 "600519"
 
     Returns:
-        匹配的股票列表，每项包含 code、name、industry 字段。最多返回 10 条。
+        匹配的股票列表，每项包含 code、name 字段。最多返回 10 条。
     """
     try:
-        _ensure_tushare_token(tool_context)
-        from integrations.tushare_client import get_pro
+        from integrations.fetch_a_share_csv import get_all_stocks
 
-        pro = get_pro()
-        if pro is None:
-            return [{"error": "Tushare 未配置，无法搜索"}]
-
-        df = pro.stock_basic(
-            exchange="",
-            list_status="L",
-            fields="ts_code,symbol,name,area,industry,list_date",
-        )
-        if df is None or df.empty:
-            return []
+        stocks = get_all_stocks()
+        if not stocks:
+            return [{"error": "无法获取股票列表"}]
 
         kw = keyword.strip()
-        mask = (
-            df["name"].str.contains(kw, case=False, na=False)
-            | df["symbol"].str.contains(kw, case=False, na=False)
-            | df["ts_code"].str.contains(kw, case=False, na=False)
-        )
-        hits = df[mask].head(10)
         results = []
-        for _, row in hits.iterrows():
-            results.append({
-                "code": str(row.get("symbol", "")),
-                "ts_code": str(row.get("ts_code", "")),
-                "name": str(row.get("name", "")),
-                "industry": str(row.get("industry", "")),
-                "area": str(row.get("area", "")),
-            })
+        for s in stocks:
+            code = s.get("code", "")
+            name = s.get("name", "")
+            if kw in name or kw in code:
+                results.append({"code": code, "name": name})
+                if len(results) >= 10:
+                    break
+
         return results if results else [{"message": f"未找到与 '{kw}' 匹配的股票"}]
     except Exception as e:
         logger.exception("search_stock_by_name error")
@@ -191,20 +190,7 @@ def diagnose_stock(code: str, cost: float = 0.0, tool_context: ToolContext = Non
         from core.stock_cache import _COL_MAP
         df = df.rename(columns=_COL_MAP)
 
-        name = code  # 默认用代码作名称
-        # 尝试获取名称
-        try:
-            from integrations.tushare_client import get_pro
-            pro = get_pro()
-            if pro:
-                info = pro.stock_basic(
-                    ts_code=_to_ts_code(code),
-                    fields="name",
-                )
-                if info is not None and not info.empty:
-                    name = str(info.iloc[0]["name"])
-        except Exception:
-            pass
+        name = _code_to_name(code)
 
         d = diagnose_one_stock(code, name, cost, df)
         text = format_diagnostic_text(d)
@@ -635,16 +621,7 @@ def generate_ai_report(stock_codes: list[str], tool_context: ToolContext) -> dic
         symbols_info = []
         for code in stock_codes:
             code = str(code).strip()
-            name = code
-            try:
-                from integrations.tushare_client import get_pro
-                pro = get_pro()
-                if pro:
-                    info = pro.stock_basic(ts_code=_to_ts_code(code), fields="name")
-                    if info is not None and not info.empty:
-                        name = str(info.iloc[0]["name"])
-            except Exception:
-                pass
+            name = _code_to_name(code)
             symbols_info.append({"code": code, "name": name, "tag": "chat_request"})
 
         from core.batch_report import run_step3

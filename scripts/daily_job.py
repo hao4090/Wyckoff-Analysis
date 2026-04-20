@@ -237,8 +237,13 @@ def main() -> int:
     step2_ok = False
     step2_err = None
     try:
+        # run_funnel 返回的 ok 是飞书推送是否成功，但我们只关心漏斗是否执行成功
+        # 即使飞书推送失败，只要 symbols_info 有数据就算成功
         step2_ok, symbols_info, benchmark_context = run_step2(webhook)
-        step2_err = None if step2_ok else "飞书发送失败"
+        # 修正：漏斗执行成功与否取决于是否有股票产出，而非飞书推送是否成功
+        if symbols_info:
+            step2_ok = True  # 有股票产出，漏斗执行成功
+        step2_err = None if step2_ok else "飞书发送失败且无股票产出"
     except Exception as e:
         step2_err = str(e)
     elapsed2 = (datetime.now(TZ) - t0).total_seconds()

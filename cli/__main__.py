@@ -41,6 +41,7 @@ _silence_streamlit()
 # CLI 环境：只显示 CRITICAL，不泄漏 traceback 给用户
 import warnings as _warnings
 _warnings.filterwarnings("ignore", category=DeprecationWarning)
+_warnings.filterwarnings("ignore", category=ResourceWarning)
 _logging.basicConfig(level=_logging.CRITICAL)
 
 
@@ -176,7 +177,23 @@ def main():
         system_prompt=system_prompt,
         session_expired=session_expired,
     )
-    app.run()
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # 退出时静默：关闭第三方连接 + 抑制 daemon 线程的垃圾输出
+        import io as _io
+        try:
+            import baostock as bs
+            bs.logout()
+        except Exception:
+            pass
+        try:
+            sys.stdout = _io.StringIO()
+            sys.stderr = _io.StringIO()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

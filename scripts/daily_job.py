@@ -262,15 +262,20 @@ def main() -> int:
 
     # 推荐跟踪写库（按 recommend_date=最近交易日）
     if step2_ok and symbols_info:
-        try:
-            recommend_trade_date_int = int(_latest_trade_date_str().replace("-", ""))
-            rec_ok = upsert_recommendations(recommend_trade_date_int, symbols_info)
-            _log(
-                f"推荐记录入库: ok={rec_ok}, count={len(symbols_info)}, date={recommend_trade_date_int}",
-                logs_path,
-            )
-        except Exception as e:
-            _log(f"推荐记录入库失败: {e}", logs_path)
+        # 预检 Supabase 配置
+        from integrations.supabase_base import is_admin_configured
+        if not is_admin_configured():
+            _log("推荐记录入库跳过：SUPABASE_SERVICE_ROLE_KEY 未配置", logs_path)
+        else:
+            try:
+                recommend_trade_date_int = int(_latest_trade_date_str().replace("-", ""))
+                rec_ok = upsert_recommendations(recommend_trade_date_int, symbols_info)
+                _log(
+                    f"推荐记录入库: ok={rec_ok}, count={len(symbols_info)}, date={recommend_trade_date_int}",
+                    logs_path,
+                )
+            except Exception as e:
+                _log(f"推荐记录入库失败: {e}", logs_path)
 
     # Step3: 批量研报（可降级：失败不影响 Funnel 成功）
     step3_ok = True

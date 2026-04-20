@@ -201,6 +201,18 @@ def main() -> int:
     if provider in OPENAI_COMPATIBLE_BASE_URLS:
         _log(f"LLM base_url: {llm_base_url or '(empty)'} (env={base_url_env_key})", logs_path)
 
+    # 设置漏斗默认参数（GitHub Actions 定时任务）
+    if not os.getenv("FUNNEL_POOL_MODE"):
+        os.environ["FUNNEL_POOL_MODE"] = "board"
+    if not os.getenv("FUNNEL_POOL_BOARD"):
+        os.environ["FUNNEL_POOL_BOARD"] = "all"
+    if not os.getenv("FUNNEL_POOL_LIMIT_COUNT"):
+        os.environ["FUNNEL_POOL_LIMIT_COUNT"] = "0"  # 0=不限制
+    if not os.getenv("FUNNEL_TRADING_DAYS"):
+        os.environ["FUNNEL_TRADING_DAYS"] = "320"
+    if not os.getenv("FUNNEL_MAX_WORKERS"):
+        os.environ["FUNNEL_MAX_WORKERS"] = "8"
+
     # 数据源口径在 integrations/data_source.py 中固定为：
     # tushare 优先（前复权 qfq），失败再回退到其它可用源。
 

@@ -102,6 +102,9 @@ STEP3_SKIP_LLM = os.getenv("STEP3_SKIP_LLM", "0").strip().lower() in {
 STEP3_RESPECT_UPSTREAM_PRIORITY = os.getenv(
     "STEP3_RESPECT_UPSTREAM_PRIORITY", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
+STEP3_SEND_COMPLIANCE_COPY = os.getenv(
+    "STEP3_SEND_COMPLIANCE_COPY", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 RECENT_DAYS = 15
@@ -534,6 +537,46 @@ def _strip_report_title(text: str) -> str:
         while lines and not lines[0].strip():
             lines.pop(0)
     return "\n".join(lines).strip()
+
+
+def _to_compliance_copy(content: str) -> str:
+    """
+    在不改变原研报内容的前提下，生成一份可对外传播的合规版：
+    - 保留研究信息；
+    - 弱化具体交易执行语句（Plan A / Plan B）。
+    """
+    src_lines = str(content or "").splitlines()
+    out_lines: list[str] = []
+    replaced_plan_a = False
+    replaced_plan_b = False
+
+    for line in src_lines:
+        if re.match(r"^\s*\*?\s*Plan\s*A\b", line, flags=re.IGNORECASE):
+            out_lines.append("- 观察要点（合规版）：关注量价结构是否延续，不构成交易指令。")
+            replaced_plan_a = True
+            continue
+        if re.match(r"^\s*\*?\s*Plan\s*B\b", line, flags=re.IGNORECASE):
+            out_lines.append("- 风险边界（合规版）：若结构出现破坏信号，应重新评估。")
+            replaced_plan_b = True
+            continue
+        out_lines.append(line)
+
+    if not replaced_plan_a and not replaced_plan_b:
+        out_lines.append("")
+        out_lines.append("> 注：本合规版未检测到 Plan A / Plan B 执行语句。")
+
+    out_lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## ⚖️ 合规声明",
+            "- 本内容仅用于市场研究与投资者教育，不构成个股推荐、买卖指令或收益承诺。",
+            "- 不提供代客理财、代客下单、收益分成等服务。",
+            "- 市场有风险，投资决策请独立判断并自行承担风险。",
+        ]
+    )
+    return "\n".join(out_lines).strip()
 
 
 def _call_track_report(
@@ -975,6 +1018,11 @@ def run(
             title = f"📄 批量研报 {date.today().strftime('%Y-%m-%d')}"
             if not _notify_all(title, content):
                 return (False, "feishu_failed", report)
+            if STEP3_SEND_COMPLIANCE_COPY:
+                compliance_title = f"📄 批量研报 B版（合规版） {date.today().strftime('%Y-%m-%d')}"
+                compliance_content = "【B版完整报告】\n\n" + _to_compliance_copy(content)
+                if not _notify_all(compliance_title, compliance_content):
+                    print("[step3] 合规版飞书推送失败（原文已发送）")
         return (True, "ok", report)
 
     payloads_by_track: dict[str, list[str]] = {"Trend": [], "Accum": []}
@@ -1217,6 +1265,11 @@ def run(
         if not _notify_all(title, content):
             print("[step3] 飞书推送失败")
             return (False, "feishu_failed", report)
+        if STEP3_SEND_COMPLIANCE_COPY:
+            compliance_title = f"📄 批量研报 B版（合规版） {date.today().strftime('%Y-%m-%d')}"
+            compliance_content = "【B版完整报告】\n\n" + _to_compliance_copy(content)
+            if not _notify_all(compliance_title, compliance_content):
+                print("[step3] 合规版飞书推送失败（原文已发送）")
     print(
         f"[step3] 研报发送成功，股票数={sum(len(payloads_by_track.get(t, [])) for t in active_tracks)}，"
         f"拉取失败数={len(failed)}"

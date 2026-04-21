@@ -55,6 +55,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
+      - name: Test TUSHARE connectivity
+        if: always()
+        run: |
+          echo "Testing TUSHARE API connectivity..."
+          python -c "
+import os
+import requests
+
+api_url = os.getenv('TUSHARE_API_URL', 'http://api.tushare.pro')
+token = os.getenv('TUSHARE_TOKEN', '')
+
+print(f'TUSHARE_API_URL: {api_url}')
+print(f'TUSHARE_TOKEN: {token[:20]}...' if token else 'TUSHARE_TOKEN: not set')
+
+try:
+    resp = requests.post(api_url, json={'api_key': token, 'body': {'api_name': 'fund_basic', 'params': {}}}, timeout=10)
+    print(f'Connection test: {resp.status_code}')
+except Exception as e:
+    print(f'Connection failed: {e}')
+"
+
       - name: Prepare logs dir
         run: mkdir -p logs
 

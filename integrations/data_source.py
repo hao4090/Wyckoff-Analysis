@@ -875,12 +875,14 @@ def fetch_index_hist(code: str, start: str | date, end: str | date) -> pd.DataFr
     try:
         return _fetch_index_tushare(code, start_s, end_s)
     except Exception as e:
+        print(f"[data_source] 大盘指数 tushare 失败：{e}")
         _debug_source_fail("tushare(index)", e)
 
     # 2) akshare fallback
     try:
         return _fetch_index_akshare(code, start_s, end_s)
     except Exception as e2:
+        print(f"[data_source] 大盘指数 akshare 失败：{e2}")
         _debug_source_fail("akshare(index)", e2)
 
     raise RuntimeError(

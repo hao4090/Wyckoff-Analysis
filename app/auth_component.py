@@ -83,8 +83,34 @@ def _restore_user_from_tokens(supabase) -> dict | None:
             user_resp = supabase.auth.get_user()
         except Exception:
             return None
-    except Exception:
-        return None
+    except Exception as e:
+        # JWT 过期，尝试刷新 token
+        if "JWT expired" in str(e) or "expired" in str(e).lower():
+            try:
+                refresh_resp = supabase.auth.refresh_session(refresh_token)
+                new_session = getattr(refresh_resp, "session", None)
+                if new_session:
+                    st.session_state.access_token = getattr(new_session, "access_token", None)
+                    st.session_state.refresh_token = getattr(new_session, "refresh_token", None)
+                    # 保存到本地存储
+                    try:
+                        from core.token_storage import persist_tokens_to_storage
+                        persist_tokens_to_storage(
+                            st.session_state.access_token or "",
+                            st.session_state.refresh_token or "",
+                        )
+                    except Exception:
+                        pass
+                    # 重新获取用户信息
+                    user_resp = supabase.auth.get_user()
+                else:
+                    return None
+            except Exception:
+                st.session_state.access_token = None
+                st.session_state.refresh_token = None
+                return None
+        else:
+            return None
 
     user_payload = _user_payload(_extract_user_from_response(user_resp))
     if not user_payload or not user_payload.get("id"):

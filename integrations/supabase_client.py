@@ -191,10 +191,14 @@ def save_user_settings(user_id: str, settings: dict):
         supabase = get_supabase_client()
         data = {"user_id": user_id, **settings}
         # upsert: 存在则更新，不存在则插入
-        supabase.table(TABLE_USER_SETTINGS).upsert(data).execute()
+        # on_conflict 指定唯一键冲突时使用
+        result = supabase.table(TABLE_USER_SETTINGS).upsert(data, on_conflict=["user_id"]).execute()
+        print(f"save_user_settings SUCCESS: user_id={user_id}")
         return True
     except APIError as e:
         print(f"Supabase API Error in save_user_settings: {e.code} - {e.message}")
+        print(f"  Details: {e.details}")
+        print(f"  Headers: {e.headers if hasattr(e, 'headers') else 'N/A'}")
         try:
             supabase = get_supabase_client()
             fallback = {"user_id": user_id, **settings}

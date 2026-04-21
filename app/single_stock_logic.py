@@ -323,6 +323,18 @@ def _build_safe_structure_plot(df_hist: pd.DataFrame, symbol: str, name: str):
     在禁用 LLM 代码执行时，使用固定模板输出一张可读结构图。
     仅依赖历史行情数据，不执行任何模型生成代码。
     """
+    # 配置中文字体
+    font_path = get_chinese_font_path()
+    if font_path:
+        fm.fontManager.addfont(font_path)
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'SimHei', 'Microsoft YaHei']
+        plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+    else:
+        # Windows 默认使用中文字体
+        if platform.system() == "Windows":
+            plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+            plt.rcParams['axes.unicode_minus'] = False
+
     df_plot = _prepare_plot_dataframe(df_hist)
 
     # 仅展示最近 240 根，避免图形过于拥挤。

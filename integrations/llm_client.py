@@ -34,7 +34,7 @@ OPENAI_COMPATIBLE_BASE_URLS = {
     "zhipu": "https://open.bigmodel.cn/api/paas/v4",
     "minimax": "https://api.minimax.chat/v1",
     "deepseek": "https://api.deepseek.com/v1",
-    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "qwen": "https://coding.dashscope.aliyuncs.com/v1",
     "kimi": "https://api.moonshot.cn/v1",
     "volcengine": "https://ark.cn-beijing.volces.com/api/v3",
 }

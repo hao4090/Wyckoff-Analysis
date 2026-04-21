@@ -61,11 +61,11 @@ def _parse_buy_dt(v: Any) -> date | None:
         return None
 
 
-def _format_buy_dt(v: Any) -> str:
+def _format_buy_dt(v: Any) -> str | None:
     d = _parse_buy_dt(v)
     if not d:
-        return ""
-    return d.strftime("%Y%m%d")
+        return None
+    return d.strftime("%Y-%m-%d")
 
 
 def _format_money(v: float) -> str:
@@ -316,12 +316,23 @@ def _load_user_live(portfolio_id: str) -> tuple[dict[str, Any], list[dict[str, A
 
     pos_resp = (
         supabase.table(TABLE_POSITIONS)
-        .select("code,name,shares,cost_price,buy_dt,strategy,updated_at")
+        .select("code,name,shares,cost_price,buy_date,strategy,updated_at")
         .eq("portfolio_id", portfolio_id)
         .order("code")
         .execute()
     )
-    positions = pos_resp.data or []
+    # 将 buy_date 映射回 buy_dt 以匹配后续代码
+    positions = []
+    for p in (pos_resp.data or []):
+        positions.append({
+            "code": p.get("code"),
+            "name": p.get("name"),
+            "shares": p.get("shares"),
+            "cost_price": p.get("cost_price"),
+            "buy_dt": p.get("buy_date"),
+            "strategy": p.get("strategy"),
+            "updated_at": p.get("updated_at"),
+        })
     return portfolio, positions
 
 
@@ -400,7 +411,7 @@ def _save_user_live(
             "name": name,
             "shares": shares,
             "cost_price": cost_price,
-            "buy_dt": buy_dt,
+            "buy_date": buy_dt,
             "strategy": strategy,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }

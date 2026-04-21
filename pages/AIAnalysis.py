@@ -15,6 +15,10 @@ from integrations.llm_client import (
     get_provider_credentials,
 )
 
+# 大师模式默认配置 - Qwen
+DEFAULT_MASTER_PROVIDER = "qwen"
+DEFAULT_MASTER_MODEL = "qwen3.5-plus"
+
 AI_ANALYSIS_DEFAULT_FEISHU_WEBHOOK = (
     "https://open.feishu.cn/open-apis/bot/v2/hook/4ef56ec3-fb84-4eb4-b4d9-775ae7de69ff"
 )
@@ -85,23 +89,28 @@ with content_col:
     )
 
     effective_feishu_webhook = _resolve_ai_analysis_feishu_webhook()
+
+    # 默认选择 Qwen 供应商
+    provider_idx = list(SUPPORTED_PROVIDERS).index(DEFAULT_MASTER_PROVIDER) if DEFAULT_MASTER_PROVIDER in SUPPORTED_PROVIDERS else 0
     provider = st.selectbox(
         "API 供应商",
         options=list(SUPPORTED_PROVIDERS),
         format_func=lambda x: PROVIDER_LABELS.get(x, x),
+        index=provider_idx,
         key="ai_provider_single",
     )
+
     api_key, default_model, base_url = _get_provider_credentials(provider)
     model = st.text_input(
         "模型",
-        value=default_model or (GEMINI_MODELS[0] if provider == "gemini" else ""),
+        value=DEFAULT_MASTER_MODEL if provider == DEFAULT_MASTER_PROVIDER else (default_model or (GEMINI_MODELS[0] if provider == "gemini" else "")),
         key="ai_model_single",
     ).strip()
     effective_single_base_url = base_url
     if provider in OPENAI_COMPATIBLE_BASE_URLS:
         single_base_url_input = st.text_input(
             "Base URL（可选）",
-            value=base_url,
+            value=base_url or (OPENAI_COMPATIBLE_BASE_URLS.get(DEFAULT_MASTER_PROVIDER, "") if provider == DEFAULT_MASTER_PROVIDER else ""),
             key=f"ai_single_base_url_{provider}",
             help="留空时自动使用该供应商默认 Base URL。",
         ).strip()
@@ -114,9 +123,11 @@ with content_col:
         st.stop()
     if provider == "gemini":
         st.caption("常用模型示例：" + "、".join(GEMINI_MODELS[:6]))
+    elif provider == "qwen":
+        st.caption("推荐模型：qwen3.5-plus")
     _render_single_stock_page_compat(
         provider,
-        model or default_model or (GEMINI_MODELS[0] if provider == "gemini" else ""),
+        model or (DEFAULT_MASTER_MODEL if provider == DEFAULT_MASTER_PROVIDER else (default_model or (GEMINI_MODELS[0] if provider == "gemini" else ""))),
         api_key,
         effective_single_base_url,
         effective_feishu_webhook,

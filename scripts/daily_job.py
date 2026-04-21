@@ -163,19 +163,7 @@ def main() -> int:
     webhook = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
     wecom_webhook = os.getenv("WECOM_WEBHOOK_URL", "").strip()
     dingtalk_webhook = os.getenv("DINGTALK_WEBHOOK_URL", "").strip()
-
-    # LLM 提供商选择：支持 DEFAULT_LLM_PROVIDER 显式指定，或自动回退到 Qwen/Gemini
-    provider = os.getenv("DEFAULT_LLM_PROVIDER", "").strip().lower()
-    if not provider:
-        # 未显式指定时，优先检查 Qwen 是否已配置（国内用户友好）
-        if os.getenv("QWEN_API_KEY", "").strip():
-            provider = "qwen"
-        elif os.getenv("GEMINI_API_KEY", "").strip():
-            provider = "gemini"
-        else:
-            provider = "gemini"  # 默认 fallback
-    provider = provider or "gemini"
-
+    provider = os.getenv("DEFAULT_LLM_PROVIDER", "gemini").strip().lower() or "gemini"
     api_key = (os.getenv(f"{provider.upper()}_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
     model_env_key = f"{provider.upper()}_MODEL"
     model = (os.getenv(model_env_key) or os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)).strip() or DEFAULT_GEMINI_MODEL
@@ -198,13 +186,7 @@ def main() -> int:
     # 仅当需要调用模型时强制要求对应厂商 API Key
     require_api_key = (not step3_skip_llm) or (not skip_step4)
     if require_api_key and not api_key:
-        # 优先提示已配置的提供商
-        if provider == "qwen" and not os.getenv("QWEN_API_KEY", "").strip():
-            missing.append("QWEN_API_KEY（未配置）")
-        elif provider == "gemini" and not os.getenv("GEMINI_API_KEY", "").strip():
-            missing.append("GEMINI_API_KEY（未配置）或设置 DEFAULT_LLM_PROVIDER=qwen 使用 Qwen")
-        else:
-            missing.append(f"{provider.upper()}_API_KEY（未配置）")
+        missing.append(f"{provider.upper()}_API_KEY 或 GEMINI_API_KEY")
     if missing:
         _log(f"配置缺失: {', '.join(missing)}", logs_path)
         return 1

@@ -484,7 +484,11 @@ def _fetch_stock_efinance(symbol: str, start: str, end: str) -> pd.DataFrame:
         import efinance as ef
         import efinance.config as ef_cfg
         # 预触发内部检查，某些版本在此处会尝试读取 data 目录
-        from efinance.common.sh_stock_check import is_sh_stock
+        # 新版本 efinance 已移除 sh_stock_check 模块，改为可选导入
+        try:
+            from efinance.common.sh_stock_check import is_sh_stock
+        except (ModuleNotFoundError, ImportError):
+            pass  # 新版本 efinance 不需要此模块
     except (PermissionError, FileNotFoundError) as e:
         _debug_source_fail("efinance_patch", e)
     finally:

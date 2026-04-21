@@ -22,6 +22,13 @@ with content_col:
         st.error("无法识别当前用户，设置页已拒绝展示。请重新登录。")
         st.stop()
 
+    # 首次访问或配置为空时，从 Supabase 加载用户设置
+    if not st.session_state.get("_settings_loaded") or not st.session_state.get("_last_loaded_user_id") == user_id:
+        from integrations.supabase_client import load_user_settings
+        load_user_settings(user_id)
+        st.session_state._settings_loaded = True
+        st.session_state._last_loaded_user_id = user_id
+
     # 兼容旧会话：新增字段可能尚未初始化，先补默认值，避免 AttributeError。
     st.session_state.setdefault("openai_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("openai", ""))
     st.session_state.setdefault("gemini_base_url", "")

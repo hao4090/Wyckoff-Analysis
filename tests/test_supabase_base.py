@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from unittest.mock import patch
 
 from integrations.supabase_base import is_admin_configured
 
@@ -12,7 +13,9 @@ class TestIsAdminConfigured:
         monkeypatch.delenv("SUPABASE_URL", raising=False)
         monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
         monkeypatch.delenv("SUPABASE_KEY", raising=False)
-        assert is_admin_configured() is False
+        # 阻止 streamlit secrets 回退
+        with patch("builtins.__import__", side_effect=ImportError("streamlit not available")):
+            assert is_admin_configured() is False
 
     def test_configured_when_env_set(self, monkeypatch):
         monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")

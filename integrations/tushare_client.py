@@ -60,16 +60,23 @@ class _RateLimitedPro:
 def get_pro():
     """返回限流版 Tushare Pro API 实例；若未配置 token 则返回 None。"""
     token = ""
+    api_url = os.getenv("TUSHARE_API_URL", "").strip()
+
     # 优先尝试从 streamlit session 中获取用户配置
     try:
         import streamlit as st
         token = (st.session_state.get("tushare_token") or "").strip()
+        # Session 中的 API URL 配置（可选）
+        if not api_url:
+            api_url = (st.session_state.get("tushare_api_url") or "").strip()
     except Exception:
         pass
 
     # 如果 session 中没有，再尝试从环境变量获取
     if not token:
         token = os.getenv("TUSHARE_TOKEN", "").strip()
+    if not api_url:
+        api_url = os.getenv("TUSHARE_API_URL", "").strip()
 
     if not token:
         return None
@@ -82,6 +89,11 @@ def get_pro():
         )
         import tushare as ts
         ts.set_token(token)
-        return _RateLimitedPro(ts.pro_api())
+        pro = ts.pro_api()
+        # 自定义 API URL（用于私有化部署）- 必须在包装前设置
+        if api_url:
+            pro._DataApi__http_url = api_url
+            print(f"[tushare] 使用自定义 API_URL: {api_url}")
+        return _RateLimitedPro(pro)
     except ImportError:
         return None

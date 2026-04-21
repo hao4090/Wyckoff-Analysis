@@ -814,12 +814,29 @@ def _fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
     """akshare 大盘指数日线 fallback（tushare 不可用时自动降级）。"""
     import akshare as ak
 
-    df = ak.index_zh_a_hist(
-        symbol=code,
-        period="daily",
-        start_date=start,
-        end_date=end,
-    )
+    # 000001 = 上证指数，akshare 需要映射
+    symbol_map = {
+        "000001": "sh000001",  # 上证指数
+        "399000": "sz399000",  # 深证成指
+        "399005": "sz399005",  # 中小板指
+        "399006": "sz399006",  # 创业板指
+        "399300": "sh000300",  # 沪深 300
+    }
+    ak_symbol = symbol_map.get(code, f"sh{code}" if code.startswith("000") else f"sz{code}")
+
+    try:
+        # 使用 ak.index_zh_a_hist
+        df = ak.index_zh_a_hist(
+            symbol=ak_symbol,
+            period="daily",
+            start_date=start,
+            end_date=end,
+        )
+    except Exception:
+        # Fallback: 使用 ak.stock_zh_index_daily
+        df = ak.stock_zh_index_daily(symbol=ak_symbol)
+        df = df[(df["date"] >= start) & (df["date"] <= end)]
+
     if df is None or df.empty:
         raise RuntimeError("akshare 大盘指数返回空数据")
     df = df.rename(

@@ -16,6 +16,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TUSHARE_API_URL: ${{ secrets.TUSHARE_API_URL }}
       TZ: Asia/Shanghai
 
     steps:

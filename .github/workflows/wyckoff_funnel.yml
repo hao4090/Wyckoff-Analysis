@@ -23,6 +23,7 @@ jobs:
       # 指定使用 Qwen 作为默认 LLM 供应商
       DEFAULT_LLM_PROVIDER: qwen
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TUSHARE_API_URL: ${{ secrets.TUSHARE_API_URL }}
       MY_PORTFOLIO_STATE: ${{ secrets.MY_PORTFOLIO_STATE }}
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}

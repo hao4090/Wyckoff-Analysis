@@ -102,6 +102,13 @@ STEP3_SKIP_LLM = os.getenv("STEP3_SKIP_LLM", "0").strip().lower() in {
 STEP3_RESPECT_UPSTREAM_PRIORITY = os.getenv(
     "STEP3_RESPECT_UPSTREAM_PRIORITY", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
+STEP3_SEND_COMPLIANCE_COPY = os.getenv(
+    "STEP3_SEND_COMPLIANCE_COPY", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+STEP3_COMPLIANCE_WATCHLIST_MAX = max(
+    int(os.getenv("STEP3_COMPLIANCE_WATCHLIST_MAX", "8")),
+    1,
+)
 
 
 RECENT_DAYS = 15
@@ -119,6 +126,14 @@ TRACK_LABELS = {
     "Trend": "Trend轨（右侧主升 / 放量点火）",
     "Accum": "Accum轨（左侧潜伏 / Spring / LPS）",
 }
+SPRINGBOARD_ABC_LEGEND = (
+    "## 🧾 起跳板硬门槛释义（A/B/C）\n"
+    "- A：近5日出现缩量测试/拒绝下跌（量比 < 0.8x 且收位 > 60%）\n"
+    "- B：突破日量比 >= 1.5x 且收盘站稳突破位（收位 > 70%）\n"
+    "- C：支撑位至少经过 2 次测试且未被有效击穿\n"
+    "- 进入“处于起跳板”通常需至少满足 2 条；若弱市（RISK_OFF/CRASH）执行更严格。\n\n"
+    "---\n"
+)
 
 
 def _dump_model_input(
@@ -528,6 +543,165 @@ def _strip_report_title(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _extract_markdown_section(content: str, header_contains: str) -> list[str]:
+    """抽取 markdown 二级标题下的文本，遇到下一个二级标题或分隔线即停止。"""
+    lines = str(content or "").splitlines()
+    picked: list[str] = []
+    in_section = False
+    for raw in lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if in_section:
+                break
+            in_section = header_contains in stripped
+            continue
+        if in_section:
+            if stripped == "---":
+                break
+            picked.append(line)
+    return picked
+
+
+def _extract_market_temperature(content: str) -> str:
+    for raw in str(content or "").splitlines():
+        if "大盘水温与资金偏好" not in raw:
+            continue
+        _, _, tail = raw.partition("：")
+        val = (tail or raw).strip()
+        if val:
+            return val
+    return ""
+
+
+def _extract_rag_digest(content: str) -> list[str]:
+    """提取 RAG 防雷摘要中的关键数字，控制 B 版篇幅。"""
+    lines = _extract_markdown_section(content, "RAG 防雷执行摘要")
+    if not lines:
+        return []
+    allow_prefixes = (
+        "- 扫描股票:",
+        "- 外部检索成功:",
+        "- 有效相关新闻:",
+        "- veto 剔除:",
+        "- 执行状态:",
+        "- 原因:",
+    )
+    picked: list[str] = []
+    for raw in lines:
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith(allow_prefixes):
+            picked.append(s[2:].strip() if s.startswith("- ") else s)
+    return picked[:4]
+
+
+def _extract_watchlist_preview(content: str, limit: int) -> list[str]:
+    lines = _extract_markdown_section(content, "处于起跳板速览")
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw in lines:
+        s = raw.strip()
+        if not s.startswith("- "):
+            continue
+        payload = s[2:].strip()
+        if not payload or payload == "无" or payload in seen:
+            continue
+        seen.add(payload)
+        items.append(payload)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _collect_camp_counts(content: str) -> tuple[int, int, int]:
+    """按三阵营统计去重后的股票代码数量。"""
+    buckets: dict[str, set[str]] = {
+        "invalidated": set(),
+        "building": set(),
+        "springboard": set(),
+    }
+    active_bucket: str | None = None
+    for raw in str(content or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "逻辑破产" in line:
+            active_bucket = "invalidated"
+            continue
+        if "储备营地" in line:
+            active_bucket = "building"
+            continue
+        if "处于起跳板" in line:
+            active_bucket = "springboard"
+            continue
+        if line.startswith("## "):
+            active_bucket = None
+            continue
+        if not active_bucket:
+            continue
+        for code in re.findall(r"\b\d{6}\b", line):
+            buckets[active_bucket].add(code)
+    return (
+        len(buckets["invalidated"]),
+        len(buckets["building"]),
+        len(buckets["springboard"]),
+    )
+
+
+def _to_compliance_copy(content: str) -> str:
+    """
+    生成一份可对外传播的 B 版合规简报：
+    - 不复刻完整长文；
+    - 仅保留关键统计 + 少量观察名单 + 合规声明。
+    """
+    text = str(content or "")
+    invalidated_n, building_n, springboard_n = _collect_camp_counts(text)
+    market_note = _extract_market_temperature(text)
+    rag_digest = _extract_rag_digest(text)
+    watchlist = _extract_watchlist_preview(text, STEP3_COMPLIANCE_WATCHLIST_MAX)
+
+    out_lines: list[str] = [
+        "## 📌 B版合规简报（精简）",
+        f"- 日期: {date.today().strftime('%Y-%m-%d')}",
+        "- 定位: 仅用于市场研究与投资者教育，不构成个股推荐或交易指令。",
+        "- 详细技术细节与完整论证请参考 A 版内部报告。",
+        (
+            f"- 三阵营统计: 逻辑破产 {invalidated_n} | "
+            f"储备营地 {building_n} | 起跳板观察 {springboard_n}"
+        ),
+    ]
+    if market_note:
+        out_lines.append(f"- 市场观察: {market_note}")
+    if rag_digest:
+        out_lines.append(f"- 防雷摘要: {'；'.join(rag_digest)}")
+
+    out_lines.append("")
+    out_lines.append(f"## 👀 起跳板观察名单（最多{STEP3_COMPLIANCE_WATCHLIST_MAX}只）")
+    if watchlist:
+        for item in watchlist:
+            out_lines.append(f"- {item}")
+    else:
+        out_lines.append("- 无")
+
+    out_lines.extend(
+        [
+            "",
+            "## 🧾 A/B/C 判定口径（简）",
+            "- A：出现缩量测试/拒绝下跌，说明抛压在收敛。",
+            "- B：出现放量突破并站稳关键位，说明需求占优。",
+            "- C：关键支撑位多次测试有效，说明结构未破坏。",
+            "",
+            "## ⚖️ 合规声明",
+            "- 本文不含买卖点、仓位建议、收益承诺及代客操作安排。",
+            "- 不提供代客理财、代客下单、收益分成等服务。",
+            "- 市场有风险，投资决策请独立判断并自行承担风险。",
+        ]
+    )
+    return "\n".join(out_lines).strip()
+
+
 def _call_track_report(
     *,
     track: str,
@@ -578,6 +752,15 @@ def _call_track_report(
     if not _has_required_sections(report):
         print(f"[step3] {track} 轨结构修复后仍缺少关键章节，追加系统兜底分层")
         report = report.rstrip() + "\n\n" + _build_fallback_sections(selected_df)
+
+    # 校验：检测报告中出现但不属于本轨输入集的股票代码（模型幻觉）
+    input_set = set(str(c).strip() for c in selected_codes)
+    mentioned = set(re.findall(r"\b(\d{6})\b", report))
+    leaked = mentioned - input_set
+    if leaked:
+        print(f"[step3] ⚠ {track} 轨报告中出现非本轨标的: {','.join(sorted(leaked))}")
+        report += f"\n\n> ⚠ 以下代码不在{track}轨输入集中，可能为模型幻觉: {', '.join(sorted(leaked))}"
+
     return (True, report, used_model or model)
 
 
@@ -835,23 +1018,15 @@ def run(
         if not bool(rag_status.get("enabled")):
             print("[step3][rag] 已关闭（RAG_VETO_ENABLED=0）")
             rag_skip_reason = "RAG_VETO_ENABLED=0"
-        elif not bool(rag_status.get("has_provider")):
-            print("[step3][rag] 跳过：未配置 TAVILY_API_KEY/SERPAPI_API_KEY")
-            rag_skip_reason = "未配置 TAVILY_API_KEY/SERPAPI_API_KEY"
         else:
             rag_inputs = [
                 {"code": str(r.get("code", "")).strip(), "name": str(r.get("name", ""))}
                 for _, r in selected_df.iterrows()
             ]
-            provider_text = (
-                f"tavily={bool(rag_status.get('tavily_configured'))}, "
-                f"serpapi={bool(rag_status.get('serpapi_configured'))}"
-            )
             print(
-                "[step3][rag] 启动："
-                f"candidates={len(rag_inputs)}, providers=({provider_text}), "
+                f"[step3][rag] 启动：candidates={len(rag_inputs)}, "
+                f"source={rag_status.get('source', 'akshare')}, "
                 f"lookback_days={rag_status.get('lookback_days')}, "
-                f"max_results={rag_status.get('max_results')}, "
                 f"workers={rag_status.get('max_workers')}"
             )
 
@@ -862,17 +1037,7 @@ def run(
             relevant_n = 0
             semantic_checked_n = 0
             error_n = 0
-            source_counts = {"tavily": 0, "serpapi": 0, "none": 0}
-
             for code, result in veto_map.items():
-                src = str(result.search_source or "").strip().lower()
-                if src == "tavily":
-                    source_counts["tavily"] += 1
-                elif src == "serpapi":
-                    source_counts["serpapi"] += 1
-                else:
-                    source_counts["none"] += 1
-
                 if int(result.raw_result_count or 0) > 0:
                     external_ok_n += 1
                 if int(result.relevant_result_count or 0) > 0:
@@ -910,14 +1075,10 @@ def run(
 
             rag_summary_lines = [
                 f"- 扫描股票: {scanned_n}",
-                f"- 外部检索成功: {external_ok_n}/{scanned_n}" if scanned_n else "- 外部检索成功: 0/0",
-                f"- 有效相关新闻: {relevant_n}/{scanned_n}" if scanned_n else "- 有效相关新闻: 0/0",
-                (
-                    f"- 来源分布: tavily={source_counts['tavily']}, "
-                    f"serpapi={source_counts['serpapi']}, none={source_counts['none']}"
-                ),
+                f"- 新闻拉取成功: {external_ok_n}/{scanned_n}" if scanned_n else "- 新闻拉取成功: 0/0",
+                f"- 命中负面关键词: {relevant_n}/{scanned_n}" if scanned_n else "- 命中负面关键词: 0/0",
                 f"- 语义二判执行: {semantic_checked_n}",
-                f"- 检索异常: {error_n}",
+                f"- 拉取异常: {error_n}",
                 f"- veto 剔除: {len(vetoed_codes)}",
             ]
 
@@ -980,6 +1141,11 @@ def run(
             title = f"📄 批量研报 {date.today().strftime('%Y-%m-%d')}"
             if not _notify_all(title, content):
                 return (False, "feishu_failed", report)
+            if STEP3_SEND_COMPLIANCE_COPY:
+                compliance_title = f"📄 批量研报 B版（合规版） {date.today().strftime('%Y-%m-%d')}"
+                compliance_content = "【B版简版报告】\n\n" + _to_compliance_copy(content)
+                if not _notify_all(compliance_title, compliance_content):
+                    print("[step3] 合规版飞书推送失败（原文已发送）")
         return (True, "ok", report)
 
     payloads_by_track: dict[str, list[str]] = {"Trend": [], "Accum": []}
@@ -1206,7 +1372,7 @@ def run(
         + "\n\n---\n"
     )
 
-    content = f"{model_banner}\n\n{rag_veto_preview}{ops_preview}\n{report}"
+    content = f"{model_banner}\n\n{rag_veto_preview}{ops_preview}{SPRINGBOARD_ABC_LEGEND}\n{report}"
     if rag_veto_lines:
         content += "\n\n## 🛑 RAG 防雷剔除清单\n" + "\n".join(rag_veto_lines)
     print(f"[step3] 飞书发送原文长度={len(content)}（不压缩，交由飞书分片）")
@@ -1222,6 +1388,11 @@ def run(
         if not _notify_all(title, content):
             print("[step3] 飞书推送失败")
             return (False, "feishu_failed", report)
+        if STEP3_SEND_COMPLIANCE_COPY:
+            compliance_title = f"📄 批量研报 B版（合规版） {date.today().strftime('%Y-%m-%d')}"
+            compliance_content = "【B版简版报告】\n\n" + _to_compliance_copy(content)
+            if not _notify_all(compliance_title, compliance_content):
+                print("[step3] 合规版飞书推送失败（原文已发送）")
     print(
         f"[step3] 研报发送成功，股票数={sum(len(payloads_by_track.get(t, [])) for t in active_tracks)}，"
         f"拉取失败数={len(failed)}"

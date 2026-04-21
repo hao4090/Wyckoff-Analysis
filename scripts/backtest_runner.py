@@ -45,6 +45,7 @@ from core.funnel_pipeline import (
     calc_market_breadth as _calc_market_breadth_for_regime,
     rank_l3_candidates,
 )
+from core.signal_confirmation import PendingPool
 
 DEFAULT_HOLD_DAYS = 30  # 网格优化：30天夏普2.493 > 25天1.967 > 20天1.413
 DEFAULT_EXIT_MODE = "sltp"
@@ -527,7 +528,10 @@ def run_backtest(
     buy_friction_pct: float = DEFAULT_BUY_FRICTION_PCT,
     sell_friction_pct: float = DEFAULT_SELL_FRICTION_PCT,
     regime_filter: bool = False,
+    pending_mode: str = "both",
 ) -> tuple[pd.DataFrame, dict]:
+    if pending_mode not in {"off", "only", "both"}:
+        raise ValueError("pending_mode 必须是 off / only / both")
     if end_dt <= start_dt:
         raise ValueError("end 必须晚于 start")
     if hold_days < 1:
@@ -660,6 +664,9 @@ def run_backtest(
     eval_days = 0
     ohlc_lookup_cache: dict[str, dict[date, tuple[float, float, float, float]]] = {}
 
+    pending_pool = PendingPool() if pending_mode != "off" else None
+    pending_confirmed_total = 0
+
     max_idx = len(trade_dates) - hold_days - 1  # -1: 信号次日才能入场，需多预留一天
     for idx in range(max_idx):
         signal_date = trade_dates[idx]
@@ -705,23 +712,50 @@ def run_backtest(
         )
 
         regime = bench_context.get("regime", "NEUTRAL") if bench_context else "NEUTRAL"
+        signal_date_str = signal_date.isoformat()
+
+        confirmed_codes: list[str] = []
+        confirmed_score_map: dict[str, float] = {}
+        confirmed_track_map: dict[str, str] = {}
+        if pending_pool is not None:
+            pending_pool.write(signal_date_str, result.triggers, day_df_map,
+                               regime, name_map, sector_map, day_cfg)
+            for cs in pending_pool.tick(day_df_map, signal_date_str):
+                c = str(cs.get("code", "")).strip()
+                if c:
+                    confirmed_codes.append(c)
+                    confirmed_score_map[c] = float(cs.get("score", 0))
+                    confirmed_track_map[c] = str(cs.get("track", "Trend"))
+            pending_confirmed_total += len(confirmed_codes)
+
         selected_for_ai, p_score_map, track_map = _select_ai_input_codes(
-            result=result,
-            day_df_map=day_df_map,
-            sector_map=sector_map,
-            regime=regime,
-            selection_mode=FUNNEL_AI_SELECTION_MODE,
+            result=result, day_df_map=day_df_map, sector_map=sector_map,
+            regime=regime, selection_mode=FUNNEL_AI_SELECTION_MODE,
         )
-        if not selected_for_ai:
-            continue
 
-        ranked_codes = selected_for_ai if int(top_n) <= 0 else selected_for_ai[:top_n]
+        if pending_mode == "only":
+            if not confirmed_codes:
+                continue
+            ranked_codes = confirmed_codes
+            p_score_map.update(confirmed_score_map)
+            track_map.update(confirmed_track_map)
+        elif pending_mode == "both":
+            seen = set(confirmed_codes)
+            merged = list(confirmed_codes) + [c for c in selected_for_ai if c not in seen]
+            if not merged:
+                continue
+            ranked_codes = merged if int(top_n) <= 0 else merged[:top_n]
+            p_score_map.update(confirmed_score_map)
+            track_map.update(confirmed_track_map)
+        else:
+            if not selected_for_ai:
+                continue
+            ranked_codes = selected_for_ai if int(top_n) <= 0 else selected_for_ai[:top_n]
 
-        # ── 大盘水温仓位控制 ──
         if regime_filter and ranked_codes:
             ratio = REGIME_POSITION_RATIO.get(regime, 1.0)
             if ratio <= 0:
-                continue  # CRASH → 完全不开仓
+                continue
             if ratio < 1.0:
                 keep_n = max(1, int(len(ranked_codes) * ratio + 0.5))
                 ranked_codes = ranked_codes[:keep_n]
@@ -889,10 +923,20 @@ def run_backtest(
         "buy_friction_pct": float(buy_friction_pct),
         "sell_friction_pct": float(sell_friction_pct),
         "regime_filter": bool(regime_filter),
+        "pending_mode": pending_mode,
+        "pending_confirmed_total": pending_confirmed_total,
     }
     if not trades_df.empty:
         ret = pd.to_numeric(trades_df["ret_pct"], errors="coerce").dropna()
         var95_ret_pct, cvar95_ret_pct = _calc_cvar95_pct(ret)
+
+        # 组合级 NAV 曲线 → 正确的 Sharpe/MDD/Calmar
+        nav_df = _build_daily_nav(
+            records, all_df_map, ohlc_lookup_cache,
+            trade_dates, start_dt, end_dt, top_n, buy_friction_pct,
+        )
+        pm = _calc_portfolio_metrics(nav_df)
+
         summary.update(
             {
                 "win_rate_pct": float((ret > 0).mean() * 100.0),
@@ -900,12 +944,17 @@ def run_backtest(
                 "median_ret_pct": float(ret.median()),
                 "q25_ret_pct": float(ret.quantile(0.25)),
                 "q75_ret_pct": float(ret.quantile(0.75)),
-                "max_drawdown_pct": _calc_max_drawdown_pct(ret),
+                "max_drawdown_pct": pm.get("portfolio_mdd_pct"),
                 "var95_ret_pct": var95_ret_pct,
                 "cvar95_ret_pct": cvar95_ret_pct,
                 "max_consecutive_losses": _calc_max_consecutive_losses(ret),
-                "sharpe_ratio": _calc_sharpe_ratio(ret, hold_days=hold_days),
-                "calmar_ratio": _calc_calmar_ratio(ret, hold_days=hold_days),
+                "sharpe_ratio": pm.get("portfolio_sharpe"),
+                "calmar_ratio": pm.get("portfolio_calmar"),
+                "portfolio_ann_ret_pct": pm.get("portfolio_ann_ret_pct"),
+                "portfolio_total_ret_pct": pm.get("portfolio_total_ret_pct"),
+                "portfolio_trading_days": pm.get("portfolio_trading_days"),
+                "portfolio_avg_positions": pm.get("portfolio_avg_positions"),
+                "_nav_df": nav_df,
                 "stratified": _calc_stratified_stats(trades_df),
             }
         )
@@ -923,6 +972,10 @@ def run_backtest(
                 "max_consecutive_losses": 0,
                 "sharpe_ratio": None,
                 "calmar_ratio": None,
+                "portfolio_ann_ret_pct": None,
+                "portfolio_total_ret_pct": None,
+                "portfolio_trading_days": 0,
+                "portfolio_avg_positions": 0.0,
                 "stratified": {},
             }
         )
@@ -1104,6 +1157,289 @@ def _calc_stratified_stats(trades_df: pd.DataFrame) -> dict[str, dict]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# 组合级净值曲线 & 指标（替代逐笔 cumprod 的错误算法）
+# ---------------------------------------------------------------------------
+
+def _build_daily_nav(
+    records: list[TradeRecord],
+    all_df_map: dict[str, pd.DataFrame],
+    ohlc_cache: dict[str, dict[date, tuple[float, float, float, float]]],
+    trade_dates: list[date],
+    start_dt: date,
+    end_dt: date,
+    top_n: int,
+    buy_friction_pct: float = 0.0,
+) -> pd.DataFrame:
+    """
+    从交易记录 + 每日 OHLCV 构建 mark-to-market 组合净值曲线。
+
+    算法：等权归一化收益指数。
+    - 每天对所有 open 持仓按收盘价 mark-to-market
+    - 组合日收益 = open 持仓收益率的等权平均（无持仓日=0）
+    - NAV[t] = NAV[t-1] × (1 + portfolio_daily_ret)
+    """
+    if not records:
+        return pd.DataFrame(columns=["date", "nav", "daily_ret_pct", "positions_count"])
+
+    # 为每笔交易建立持仓信息
+    # entry_date = signal 次日（实际买入日），exit_date = 实际卖出日
+    # entry_exec = entry_close × (1 + friction)，与 ret_pct 口径一致
+    positions: list[dict] = []
+    for r in records:
+        # entry_target = signal_date 的下一个交易日
+        try:
+            sig_idx = next(i for i, d in enumerate(trade_dates) if d >= r.signal_date)
+            entry_date = trade_dates[sig_idx + 1] if sig_idx + 1 < len(trade_dates) else None
+        except StopIteration:
+            entry_date = None
+        if entry_date is None:
+            continue
+        entry_exec = r.entry_close * (1.0 + buy_friction_pct / 100.0)
+        if entry_exec <= 0:
+            continue
+        # 确保 ohlc_cache 有此 code
+        if r.code not in ohlc_cache:
+            df = all_df_map.get(r.code)
+            if df is not None and not df.empty:
+                ohlc_cache[r.code] = _build_daily_ohlc_lookup(df)
+        positions.append({
+            "code": r.code,
+            "entry_date": entry_date,
+            "exit_date": r.exit_date,
+            "entry_exec": entry_exec,
+        })
+
+    if not positions:
+        return pd.DataFrame(columns=["date", "nav", "daily_ret_pct", "positions_count"])
+
+    window = [d for d in trade_dates if start_dt <= d <= end_dt]
+    if not window:
+        return pd.DataFrame(columns=["date", "nav", "daily_ret_pct", "positions_count"])
+
+    nav = 1.0
+    prev_mtm: dict[int, float] = {}  # position_idx -> 昨日 mtm 价格
+    rows: list[dict] = []
+
+    for day in window:
+        open_indices: list[int] = []
+        daily_rets: list[float] = []
+
+        for idx, pos in enumerate(positions):
+            if pos["entry_date"] > day or pos["exit_date"] < day:
+                continue
+            open_indices.append(idx)
+
+            ohlc = ohlc_cache.get(pos["code"], {})
+            candle = ohlc.get(day)
+            if candle is None:
+                # 无此日行情（停牌），沿用昨日 mtm
+                daily_rets.append(0.0)
+                continue
+
+            close_today = candle[3]  # (open, high, low, close)
+            prev_price = prev_mtm.get(idx, pos["entry_exec"])
+            if prev_price > 0:
+                daily_rets.append(close_today / prev_price - 1.0)
+            else:
+                daily_rets.append(0.0)
+            prev_mtm[idx] = close_today
+
+        n_open = len(open_indices)
+        if n_open > 0 and daily_rets:
+            port_ret = sum(daily_rets) / n_open
+        else:
+            port_ret = 0.0
+
+        nav *= (1.0 + port_ret)
+        rows.append({
+            "date": day,
+            "nav": nav,
+            "daily_ret_pct": port_ret * 100.0,
+            "positions_count": n_open,
+        })
+
+        # 清理已结束持仓的 prev_mtm
+        for idx in list(prev_mtm.keys()):
+            if positions[idx]["exit_date"] < day:
+                del prev_mtm[idx]
+
+    return pd.DataFrame(rows)
+
+
+def _calc_portfolio_metrics(
+    nav_df: pd.DataFrame,
+    risk_free_annual: float = 2.0,
+) -> dict:
+    """从每日 NAV 曲线计算组合级风险调整指标。"""
+    empty = {
+        "portfolio_sharpe": None,
+        "portfolio_mdd_pct": None,
+        "portfolio_calmar": None,
+        "portfolio_ann_ret_pct": None,
+        "portfolio_total_ret_pct": None,
+        "portfolio_trading_days": 0,
+        "portfolio_avg_positions": 0.0,
+    }
+    if nav_df is None or nav_df.empty or len(nav_df) < 2:
+        return empty
+
+    nav = nav_df["nav"]
+    daily_ret = nav_df["daily_ret_pct"] / 100.0  # 转为小数
+
+    n_days = len(nav_df)
+    total_ret_pct = (float(nav.iloc[-1]) / float(nav.iloc[0]) - 1.0) * 100.0
+    ann_factor = 250.0 / max(n_days, 1)
+    ann_ret_pct = total_ret_pct * ann_factor
+
+    # MDD
+    peak = nav.cummax()
+    drawdown = (nav / peak - 1.0)
+    mdd_pct = float(drawdown.min()) * 100.0
+
+    # Sharpe
+    rf_daily = risk_free_annual / 100.0 / 250.0
+    excess = daily_ret - rf_daily
+    std_daily = float(excess.std(ddof=1))
+    if std_daily > 0 and len(excess) >= 3:
+        sharpe = float(excess.mean()) / std_daily * (250.0 ** 0.5)
+    else:
+        sharpe = None
+
+    # Calmar
+    if mdd_pct < 0:
+        calmar = ann_ret_pct / abs(mdd_pct)
+    else:
+        calmar = None
+
+    avg_pos = float(nav_df["positions_count"].mean()) if "positions_count" in nav_df.columns else 0.0
+
+    return {
+        "portfolio_sharpe": sharpe,
+        "portfolio_mdd_pct": mdd_pct,
+        "portfolio_calmar": calmar,
+        "portfolio_ann_ret_pct": ann_ret_pct,
+        "portfolio_total_ret_pct": total_ret_pct,
+        "portfolio_trading_days": n_days,
+        "portfolio_avg_positions": avg_pos,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 策略建议自动生成
+# ---------------------------------------------------------------------------
+
+def _generate_strategy_advice(summary: dict) -> list[str]:
+    """根据回测分层统计自动生成策略调整建议。"""
+    advice: list[str] = []
+
+    win_rate = summary.get("win_rate_pct")
+    avg_ret = summary.get("avg_ret_pct")
+    mdd = summary.get("max_drawdown_pct")
+    sharpe = summary.get("sharpe_ratio")
+    max_consec = summary.get("max_consecutive_losses", 0)
+    avg_pos = summary.get("portfolio_avg_positions", 0)
+    hold_days = summary.get("hold_days", 0)
+    stop_loss = summary.get("stop_loss_pct", 0)
+    take_profit = summary.get("take_profit_pct", 0)
+    stratified = summary.get("stratified", {})
+    by_regime = stratified.get("by_regime", {})
+    by_track = stratified.get("by_track", {})
+
+    # 1. 各水温环境诊断
+    for regime, stats in sorted(by_regime.items()):
+        r_avg = stats.get("avg_ret_pct")
+        r_trades = stats.get("trades", 0)
+        r_win = stats.get("win_rate_pct")
+        if r_avg is not None and r_trades >= 10 and r_avg < -1.5:
+            advice.append(
+                f"🔴 {regime} 环境下平均收益 {r_avg:+.2f}%（{r_trades}笔），"
+                f"建议该水温下暂停开仓或大幅降仓"
+            )
+        elif r_avg is not None and r_trades >= 10 and r_avg < -0.5:
+            advice.append(
+                f"🟡 {regime} 环境下平均收益 {r_avg:+.2f}%（{r_trades}笔），"
+                f"建议降低仓位至 30% 以下"
+            )
+        elif r_avg is not None and r_trades >= 10 and r_avg > 1.0:
+            advice.append(
+                f"🟢 {regime} 环境下表现较好（均收 {r_avg:+.2f}%），可加大仓位"
+            )
+
+    # 2. Trend vs Accum 分化
+    t_stats = by_track.get("Trend", {})
+    a_stats = by_track.get("Accum", {})
+    t_sharpe = t_stats.get("sharpe_ratio")
+    a_sharpe = a_stats.get("sharpe_ratio")
+    if t_sharpe is not None and a_sharpe is not None:
+        diff = abs((t_sharpe or 0) - (a_sharpe or 0))
+        if diff > 0.5:
+            better = "Accum" if (a_sharpe or 0) > (t_sharpe or 0) else "Trend"
+            worse = "Trend" if better == "Accum" else "Accum"
+            advice.append(
+                f"🟡 {better}（夏普 {by_track[better].get('sharpe_ratio', 0):.3f}）"
+                f"明显优于 {worse}（夏普 {by_track[worse].get('sharpe_ratio', 0):.3f}），"
+                f"考虑侧重 {better} 信号"
+            )
+
+    # 3. 整体胜率
+    if win_rate is not None and win_rate < 35:
+        advice.append(
+            f"🔴 整体胜率仅 {win_rate:.1f}%，低于 35% 警戒线，"
+            f"建议收紧入场筛选条件或增加信号确认环节"
+        )
+    elif win_rate is not None and win_rate < 45:
+        advice.append(
+            f"🟡 胜率 {win_rate:.1f}%，偏低，考虑提高信号分数门槛"
+        )
+
+    # 4. 回撤
+    if mdd is not None and mdd < -25:
+        advice.append(
+            f"🔴 最大回撤 {mdd:.1f}%，建议收紧止损线或降低每日候选数 TopN"
+        )
+    elif mdd is not None and mdd < -15:
+        advice.append(
+            f"🟡 最大回撤 {mdd:.1f}%，关注风控参数是否偏松"
+        )
+
+    # 5. 连续亏损
+    if max_consec and int(max_consec) >= 8:
+        advice.append(
+            f"🔴 最长连续亏损 {int(max_consec)} 笔，建议增加信号确认机制或缩短持有期"
+        )
+    elif max_consec and int(max_consec) >= 5:
+        advice.append(
+            f"🟡 最长连续亏损 {int(max_consec)} 笔，关注是否需要加入熔断机制"
+        )
+
+    # 6. 持仓稀疏
+    if avg_pos is not None and avg_pos < 0.5:
+        advice.append(
+            "🟡 大部分交易日无持仓，信号触发过少，考虑放宽筛选条件或扩大股票池"
+        )
+
+    # 7. 止盈效果（如果开了止盈但夏普仍负）
+    if take_profit and take_profit > 0 and sharpe is not None and sharpe < -0.3:
+        advice.append(
+            f"🟡 开启 TP{take_profit:.0f}% 后夏普仍为 {sharpe:.3f}，"
+            f"止盈可能过早截断盈利单，建议尝试关闭止盈"
+        )
+
+    # 8. 夏普整体评估
+    if sharpe is not None and sharpe > 0.5:
+        advice.append(f"🟢 组合夏普 {sharpe:.3f}，策略表现良好")
+    elif sharpe is not None and sharpe < -0.5:
+        advice.append(
+            f"🔴 组合夏普 {sharpe:.3f}，策略整体亏损，需要全面复盘信号源质量"
+        )
+
+    if not advice:
+        advice.append("🟢 当前参数组合表现尚可，暂无强烈调整建议")
+
+    return advice
+
+
 def _build_summary_md(summary: dict) -> str:
     use_current_meta = bool(summary.get("use_current_meta"))
     meta_mode = (
@@ -1149,6 +1485,7 @@ def _build_summary_md(summary: dict) -> str:
             f"- 买入摩擦成本: {_fmt_metric(summary.get('buy_friction_pct'), 3)}%",
             f"- 卖出摩擦成本: {_fmt_metric(summary.get('sell_friction_pct'), 3)}%",
             f"- 元数据口径: {meta_mode}",
+            f"- 信号确认模式: {summary.get('pending_mode')}",
             f"- 大盘水温仓控: {'开启' if summary.get('regime_filter') else '关闭'}",
             f"- 成交样本: {summary.get('trades')}",
             "",
@@ -1159,12 +1496,17 @@ def _build_summary_md(summary: dict) -> str:
             f"- 25%分位: {_fmt_metric(summary.get('q25_ret_pct'), 3)}%",
             f"- 75%分位: {_fmt_metric(summary.get('q75_ret_pct'), 3)}%",
             "",
-            "## 风险调整指标",
+            "## 组合风险指标（基于每日净值曲线）",
             f"- 夏普比 (Sharpe Ratio): {_fmt_metric(summary.get('sharpe_ratio'), 3)}",
             f"- 卡玛比 (Calmar Ratio): {_fmt_metric(summary.get('calmar_ratio'), 3)}",
-            f"- 最大回撤(逐笔复利): {_fmt_metric(summary.get('max_drawdown_pct'), 3)}%",
+            f"- 最大回撤: {_fmt_metric(summary.get('max_drawdown_pct'), 2)}%",
+            f"- 组合年化收益: {_fmt_metric(summary.get('portfolio_ann_ret_pct'), 2)}%",
+            f"- 组合总收益: {_fmt_metric(summary.get('portfolio_total_ret_pct'), 2)}%",
+            f"- 平均持仓数: {_fmt_metric(summary.get('portfolio_avg_positions'), 1)}",
+            "",
+            "## 逐笔风险统计",
             f"- VaR95(单笔收益): {_fmt_metric(summary.get('var95_ret_pct'), 3)}%",
-            f"- CVaR95(最差5%%均值): {_fmt_metric(summary.get('cvar95_ret_pct'), 3)}%",
+            f"- CVaR95(最差5%均值): {_fmt_metric(summary.get('cvar95_ret_pct'), 3)}%",
             f"- 最长连续亏损笔数: {_fmt_metric(summary.get('max_consecutive_losses'), 0)}",
     ]
 
@@ -1206,6 +1548,13 @@ def _build_summary_md(summary: dict) -> str:
         ]:
             vals = [_fmt_metric(by_regime[rk].get(key), nd) for rk in regime_keys]
             lines.append(f"| {label} | " + " | ".join(vals) + " |")
+
+    # 策略调整建议
+    advice_items = _generate_strategy_advice(summary)
+    if advice_items:
+        lines.extend(["", "## 策略调整建议", ""])
+        for i, item in enumerate(advice_items, 1):
+            lines.append(f"{i}. {item}")
 
     lines.extend(["", "## 说明", *notes])
     return "\n".join(lines)
@@ -1312,6 +1661,12 @@ def main() -> int:
         default=False,
         help="启用大盘水温仓位控制: CRASH 不开仓, RISK_ON/PANIC_REPAIR 半仓, NEUTRAL 全仓",
     )
+    parser.add_argument(
+        "--pending-mode",
+        choices=["off", "only", "both"],
+        default="both",
+        help="信号确认模式: off=直接用L4信号, only=仅用确认后信号, both=两者合并(默认, 与生产链路对齐)",
+    )
     args = parser.parse_args()
 
     start_dt = _parse_date(args.start)
@@ -1349,6 +1704,7 @@ def main() -> int:
                 buy_friction_pct=args.buy_friction_pct,
                 sell_friction_pct=args.sell_friction_pct,
                 regime_filter=args.regime_filter,
+                pending_mode=args.pending_mode,
             )
         except Exception as exc:
             last_error = exc
@@ -1375,6 +1731,13 @@ def main() -> int:
         summary_md = _build_summary_md(summary)
         summary_path.write_text(summary_md + "\n", encoding="utf-8")
         trades_df.to_csv(trades_path, index=False, encoding="utf-8-sig")
+
+        # 输出 NAV 曲线 CSV（便于画图分析）
+        nav_df = summary.pop("_nav_df", None)
+        if nav_df is not None and not nav_df.empty:
+            nav_path = out_dir / f"nav_{stamp}.csv"
+            nav_df.to_csv(nav_path, index=False, encoding="utf-8-sig")
+            print(f"[backtest] nav     -> {nav_path}")
 
         print(summary_md)
         print("")

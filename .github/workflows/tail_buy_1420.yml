@@ -1,12 +1,13 @@
-name: Review List Replay
+name: Tail Buy 14:20
 
 on:
   schedule:
-    - cron: '25 11 * * 1-5'   # UTC 11:25 Mon-Fri = 北京时间 19:25
+    # UTC 06:20 Mon-Fri = 北京时间 14:20
+    - cron: "20 6 * * 1-5"
   workflow_dispatch:
 
 concurrency:
-  group: review-list-replay-${{ github.ref }}
+  group: tail-buy-1420-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -14,15 +15,28 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONUNBUFFERED: "1"
-      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       TZ: Asia/Shanghai
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+      DEFAULT_LLM_PROVIDER: gemini
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TAIL_BUY_LLM_TOP_N: "20"
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TAIL_BUY_FETCH_CONCURRENCY: "8"
+      TAIL_BUY_LLM_CONCURRENCY: "4"
+      TAIL_BUY_TASK_TIMEOUT_MIN: "25"
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
@@ -35,16 +49,20 @@ jobs:
       - name: Prepare logs dir
         run: mkdir -p logs
 
-      - name: Run review list replay
+      - name: Run tail buy job
         run: |
-          python -u scripts/review_list_replay.py \
-            2>&1 | tee -a ${{ github.workspace }}/logs/review_list_replay.log
+          set -o pipefail
+          python -u scripts/tail_buy_intraday_job.py \
+            --max-llm-symbols "${TAIL_BUY_LLM_TOP_N}" \
+            --deadline-minute "${TAIL_BUY_TASK_TIMEOUT_MIN}" \
+            --logs "${{ github.workspace }}/logs/tail_buy_1420.log" \
+            2>&1 | tee -a "${{ github.workspace }}/logs/tail_buy_1420.console.log"
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: review-list-replay-logs-${{ github.run_number }}
+          name: tail-buy-1420-logs-${{ github.run_number }}
           path: logs/*
           retention-days: 7
           if-no-files-found: warn
@@ -52,7 +70,6 @@ jobs:
       - name: Notify on failure
         if: failure()
         env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WORKFLOW: ${{ github.workflow }}
           REF: ${{ github.ref_name }}
@@ -67,7 +84,7 @@ jobs:
           payload = {
             'msg_type': 'interactive',
             'card': {
-              'header': {'title': {'tag': 'plain_text', 'content': '❌ Review List 复盘任务失败'}},
+              'header': {'title': {'tag': 'plain_text', 'content': '❌ 尾盘买入扫描任务失败'}},
               'elements': [{'tag': 'div', 'text': {'tag': 'lark_md', 'content': content}}]
             }
           }
@@ -77,3 +94,4 @@ jobs:
           except Exception as e:
             print('warning: 失败通知发送异常:', e)
           "
+

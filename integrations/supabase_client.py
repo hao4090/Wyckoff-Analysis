@@ -7,7 +7,7 @@ from core.constants import TABLE_USER_SETTINGS
 from integrations.llm_client import DEFAULT_GEMINI_MODEL, OPENAI_COMPATIBLE_BASE_URLS
 from integrations.supabase_base import create_anon_client
 
-CUSTOM_PROVIDER_KEYS = ("zhipu", "minimax", "qwen", "kimi", "volcengine")
+CUSTOM_PROVIDER_KEYS = ("zhipu", "minimax", "qwen", "volcengine")
 
 
 def _parse_custom_providers(raw_value) -> dict:
@@ -66,9 +66,6 @@ def reset_user_settings_state() -> None:
     st.session_state.qwen_api_key = ""
     st.session_state.qwen_model = ""
     st.session_state.qwen_base_url = OPENAI_COMPATIBLE_BASE_URLS.get("qwen", "")
-    st.session_state.kimi_api_key = ""
-    st.session_state.kimi_model = ""
-    st.session_state.kimi_base_url = OPENAI_COMPATIBLE_BASE_URLS.get("kimi", "")
     st.session_state.volcengine_api_key = ""
     st.session_state.volcengine_model = ""
     st.session_state.volcengine_base_url = OPENAI_COMPATIBLE_BASE_URLS.get("volcengine", "")

@@ -3,7 +3,7 @@
 威科夫终端读盘室 — 入口。
 
 用法:
-    wyckoff                # 直接启动，在 TUI 内配置模型
+    wyckoff                # 启动 TUI
     wyckoff update         # 升级到最新版
 """
 from __future__ import annotations
@@ -37,6 +37,12 @@ try:
 except Exception:
     pass
 _silence_streamlit()
+
+# CLI 环境：只显示 CRITICAL，不泄漏 traceback 给用户
+import warnings as _warnings
+_warnings.filterwarnings("ignore", category=DeprecationWarning)
+_warnings.filterwarnings("ignore", category=ResourceWarning)
+_logging.basicConfig(level=_logging.CRITICAL)
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +81,7 @@ def _do_update():
     pkg = "youngcan-wyckoff-analysis"
     uv = shutil.which("uv")
     if uv:
-        cmd = [uv, "pip", "install", "--upgrade", pkg]
+        cmd = [uv, "pip", "install", "--python", sys.executable, "--upgrade", pkg]
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", pkg]
     try:
@@ -86,8 +92,20 @@ def _do_update():
     sys.exit(0)
 
 
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("youngcan-wyckoff-analysis")
+    except Exception:
+        return "dev"
+
+
 def main():
-    parser = argparse.ArgumentParser(description="威科夫终端读盘室")
+    parser = argparse.ArgumentParser(
+        prog="wyckoff",
+        description="威科夫终端读盘室 — Wyckoff 量价分析 Agent",
+    )
+    parser.add_argument("-v", "--version", action="version", version=f"wyckoff {_get_version()}")
     parser.add_argument(
         "command", nargs="?", default=None,
         help="子命令: update（升级到最新版）",
@@ -101,33 +119,32 @@ def main():
         print("可用命令: wyckoff update")
         sys.exit(1)
 
-    # UI
-    from cli import ui
+    # --- 初始化：Auth + Tools + Provider ---
+    from cli.tools import ToolRegistry
+    tools = ToolRegistry()
 
-    # --- Auth：尝试恢复登录态 ---
-    auth_state = {
-        "user_id": "",
-        "email": "",
-    }
-
+    session_expired = False
     try:
-        from cli.auth import restore_session
+        from cli.auth import restore_session, _load_session
+        had_session = _load_session() is not None
         session = restore_session()
         if session:
-            auth_state["user_id"] = session["user_id"]
-            auth_state["email"] = session["email"]
+            tools.state.update({
+                "user_id": session["user_id"],
+                "email": session["email"],
+                "access_token": session.get("access_token", ""),
+                "refresh_token": session.get("refresh_token", ""),
+            })
+            from core.stock_cache import set_cli_tokens
+            set_cli_tokens(session.get("access_token", ""), session.get("refresh_token", ""))
+        elif had_session:
+            session_expired = True
     except Exception:
         pass
 
-    # 创建工具注册表（user_id 来自 auth）
-    from cli.tools import ToolRegistry
-    tools = ToolRegistry(user_id=auth_state["user_id"])
-
-    # 加载系统提示词
     from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
     system_prompt = CHAT_AGENT_SYSTEM_PROMPT
 
-    # Provider 状态
     state = {
         "provider": None,
         "provider_name": "",
@@ -136,151 +153,61 @@ def main():
         "base_url": "",
     }
 
-    # --- 恢复模型配置 ---
     try:
-        from cli.auth import load_model_config
-        saved_config = load_model_config()
-        if saved_config and saved_config.get("provider_name") and saved_config.get("api_key"):
-            env_key = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(saved_config["provider_name"])
-            if env_key:
-                os.environ[env_key] = saved_config["api_key"]
-            provider, err = _create_provider(
-                saved_config["provider_name"], saved_config["api_key"],
-                saved_config.get("model", ""), saved_config.get("base_url", ""),
-            )
-            if not err:
-                state.update(saved_config)
-                state["provider"] = provider
+        from cli.auth import load_model_configs, load_default_model_id
+        configs = load_model_configs()
+        default_id = load_default_model_id()
+        if configs and default_id:
+            # 为所有配置设置环境变量（工具可能读取）
+            env_map = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+            for cfg in configs:
+                ek = env_map.get(cfg.get("provider_name", ""))
+                if ek and cfg.get("api_key"):
+                    os.environ.setdefault(ek, cfg["api_key"])
+            default_cfg = next((c for c in configs if c["id"] == default_id), configs[0])
+            if len(configs) == 1:
+                provider, err = _create_provider(
+                    default_cfg["provider_name"], default_cfg["api_key"],
+                    default_cfg.get("model", ""), default_cfg.get("base_url", ""),
+                )
+                if not err:
+                    state.update(default_cfg)
+                    state["provider"] = provider
+            else:
+                from cli.providers.fallback import FallbackProvider
+                state.update(default_cfg)
+                state["provider"] = FallbackProvider(configs, default_id)
     except Exception:
         pass
 
-    def _ensure_provider() -> bool:
-        if state["provider"] is not None:
-            return True
-        ui.print_info("尚未配置模型，请先运行 /model 设置。")
-        return False
-
-    def _do_login():
-        """执行登录流程。"""
-        creds = ui.login_prompt()
-        if not creds:
-            return
-        email, password = creds
+    # --- 启动 TUI ---
+    from cli.tui import WyckoffTUI
+    app = WyckoffTUI(
+        provider=state["provider"],
+        tools=tools,
+        state=state,
+        system_prompt=system_prompt,
+        session_expired=session_expired,
+    )
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # 退出时静默：关闭第三方连接 + OS 级重定向抑制 daemon 线程垃圾输出
         try:
-            from cli.auth import login
-            session = login(email, password)
-            auth_state["user_id"] = session["user_id"]
-            auth_state["email"] = session["email"]
-            # 更新工具的 user_id
-            tools._tool_context.state["user_id"] = session["user_id"]
-            ui.print_info(f"✓ 登录成功 ({session['email']})")
-        except Exception as e:
-            err_msg = str(e)
-            if "Invalid login" in err_msg or "invalid" in err_msg.lower():
-                ui.print_error("邮箱或密码错误。")
-            else:
-                ui.print_error(f"登录失败: {err_msg}")
-
-    def _do_logout():
-        """执行登出。"""
-        from cli.auth import logout
-        logout()
-        auth_state["user_id"] = ""
-        auth_state["email"] = ""
-        tools._tool_context.state["user_id"] = ""
-        ui.print_info("已退出登录。")
-
-    # Banner
-    model_hint = f"{state['provider_name']}:{state['model']}" if state["provider"] else ""
-    ui.print_banner(email=auth_state["email"], model=model_hint)
-
-    # 对话历史
-    messages: list[dict] = []
-
-    # REPL
-    while True:
-        user_input = ui.get_input()
-
-        if not user_input:
-            continue
-
-        if user_input.startswith("/"):
-            cmd = user_input.lower().split()[0]
-            if cmd in ("/quit", "/exit", "/q"):
-                ui.print_info("再见。")
-                break
-            elif cmd in ("/clear", "/new"):
-                messages.clear()
-                ui.print_info("对话已清空。")
-                continue
-            elif cmd == "/help":
-                ui.print_help()
-                continue
-            elif cmd == "/login":
-                _do_login()
-                continue
-            elif cmd == "/logout":
-                _do_logout()
-                continue
-            elif cmd == "/model":
-                result = ui.configure_model(state)
-                if result:
-                    provider, err = _create_provider(
-                        result["provider_name"], result["api_key"],
-                        result["model"], result["base_url"],
-                    )
-                    if err:
-                        ui.print_error(err)
-                    else:
-                        state.update(result)
-                        state["provider"] = provider
-                        ui.print_info(f"已切换到: {provider.name}")
-                        # 持久化模型配置
-                        from cli.auth import save_model_config
-                        save_model_config({
-                            "provider_name": result["provider_name"],
-                            "api_key": result["api_key"],
-                            "model": result["model"],
-                            "base_url": result["base_url"],
-                        })
-                continue
-            else:
-                ui.print_error(f"未知命令: {user_input}，输入 /help 查看可用命令。")
-                continue
-
-        if not _ensure_provider():
-            continue
-
-        messages.append({"role": "user", "content": user_input})
-
-        def on_tool_call(name, call_args):
-            ui.print_tool_call(name, tools.display_name(name), call_args)
-
-        def on_tool_result(name, result):
-            ui.print_tool_result(name, tools.display_name(name), result)
-
+            import baostock as bs
+            bs.logout()
+        except Exception:
+            pass
+        # os.dup2 在 OS 文件描述符层面重定向，不受 Python GC 影响
         try:
-            from cli.agent import run
-            response = run(
-                provider=state["provider"],
-                tools=tools,
-                messages=messages,
-                system_prompt=system_prompt,
-                on_tool_call=on_tool_call,
-                on_tool_result=on_tool_result,
-                console=ui.console,
-            )
-            ui.print_response(response)
-        except KeyboardInterrupt:
-            ui.print_info("\n已中断。")
-            if messages and messages[-1]["role"] == "user":
-                messages.pop()
-        except Exception as e:
-            ui.print_error(f"Agent 错误: {e}")
-            # 回滚本轮消息（包括 user + assistant/tool）
-            while messages and messages[-1].get("role") != "user":
-                messages.pop()
-            messages.pop() if messages else None
+            _devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(_devnull, 1)  # stdout fd
+            os.dup2(_devnull, 2)  # stderr fd
+            os.close(_devnull)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

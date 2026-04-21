@@ -432,7 +432,7 @@ def _baostock_logout_on_exit() -> None:
             return
         try:
             bs.logout()
-        except Exception:
+        except BaseException:
             pass
         _BAOSTOCK_LOGGED = False
 

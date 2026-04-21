@@ -475,6 +475,7 @@ def run_funnel_job(
         "markup_symbols": markup_symbols,
         "accum_stage_map": accum_stage_map,
         "exit_signals": exit_signals,
+        "all_df_map": all_df_map,
     }
     if include_debug_context:
         metrics["_debug"] = {
@@ -512,6 +513,7 @@ def run(
     每项为 {"code": str, "name": str, "tag": str}。
     """
     triggers, metrics = run_funnel_job()
+    all_df_map = metrics.get("all_df_map", {})
     benchmark_context = metrics.get("benchmark_context", {}) or {}
     try:
         name_map = _stock_name_map()
@@ -767,6 +769,7 @@ def run(
                 "priority_score_map": score_map,
                 "name_map": name_map,
                 "sector_map": sector_map,
+                "all_df_map": all_df_map,
             }
             return (ok, symbols_for_report, benchmark_context, details)
         return (ok, symbols_for_report, benchmark_context)
@@ -1094,6 +1097,7 @@ def run(
             "priority_score_map": score_map,
             "name_map": name_map,
             "sector_map": sector_map,
+            "all_df_map": all_df_map,
         }
         return (ok, symbols_for_report, benchmark_context, details)
     return (ok, symbols_for_report, benchmark_context)

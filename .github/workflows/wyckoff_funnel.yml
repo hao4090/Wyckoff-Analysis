@@ -1,62 +1,100 @@
-name: Wyckoff Funnel
+ name: Wyckoff Funnel
 
-on:
-  schedule:
-    # 北京 18:25 (UTC+8)，为了避开 GitHub Actions 整点/半点的高峰期丢包问题，提前5分钟
-    - cron: '25 10 * * 0-4'
-  workflow_dispatch:
+  on:
+    schedule:
+      - cron: '25 10 * * 0-4'
+    workflow_dispatch:
 
-concurrency:
-  group: daily-job-${{ github.ref }}
-  cancel-in-progress: true
+  concurrency:
+    group: daily-job-${{ github.ref }}
+    cancel-in-progress: true
 
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    env:
-      PYTHONUNBUFFERED: "1"
-      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-      # Qwen API 配置（通义千问）
-      QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
-      QWEN_MODEL: qwen3.5-plus
-      QWEN_BASE_URL: https://coding.dashscope.aliyuncs.com/v1
-      # 指定使用 Qwen 作为默认 LLM 供应商
-      DEFAULT_LLM_PROVIDER: qwen
-      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-      TUSHARE_API_URL: ${{ secrets.TUSHARE_API_URL }}
-      MY_PORTFOLIO_STATE: ${{ secrets.MY_PORTFOLIO_STATE }}
-      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
-      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-      SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
-      # 实盘风控参数：锁死 -9% 止损 + 单票仓位上限
-      STEP4_BUY_HARD_STOP_ENABLED: "1"
-      STEP4_BUY_HARD_STOP_PCT: "9.0"
-      STEP4_BUY_STOP_MODE: "floor"
-      STEP4_PROBE_BUDGET_LIMIT: "0.10"
-      STEP4_ATTACK_BUDGET_LIMIT: "0.20"
-      TZ: Asia/Shanghai
+  jobs:
+    run:
+      runs-on: ubuntu-latest
+      env:
+        PYTHONUNBUFFERED: "1"
+        FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+        QWEN_MODEL: qwen3.5-plus
+        QWEN_BASE_URL: https://coding.dashscope.aliyuncs.com/v1
+        DEFAULT_LLM_PROVIDER: qwen
+        TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+        MY_PORTFOLIO_STATE: ${{ secrets.MY_PORTFOLIO_STATE }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
+        TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+        STEP4_BUY_HARD_STOP_ENABLED: "1"
+        STEP4_BUY_HARD_STOP_PCT: "9.0"
+        STEP4_BUY_STOP_MODE: "floor"
+        STEP4_PROBE_BUDGET_LIMIT: "0.10"
+        STEP4_ATTACK_BUDGET_LIMIT: "0.20"
+        TZ: Asia/Shanghai
 
-    steps:
-      - uses: actions/checkout@v5
+      steps:
+        - uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: "pip"
+        - name: Set up Python
+          uses: actions/setup-python@v6
+          with:
+            python-version: "3.11"
+            cache: "pip"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
+        - name: Install dependencies
+          run: |
+            python -m pip install --upgrade pip
+            pip install -e .
 
-      - name: Test TUSHARE connectivity
-        if: always()
-        run: |
-          echo "Testing TUSHARE API connectivity..."
-          python -c "
+        - name: Prepare logs dir
+          run: mkdir -p logs
+
+        - name: Run daily job
+          run: |
+            set -o pipefail
+            python -u scripts/daily_job.py --logs ${{ github.workspace }}/logs/daily_job.log \
+              2>&1 | tee -a ${{ github.workspace }}/logs/daily_job.console.log
+
+        - name: Upload artifacts
+          if: always()
+          uses: actions/upload-artifact@v7
+          with:
+            name: daily-job-logs-${{ github.run_number }}
+            path: logs/*.log
+            retention-days: 7
+            if-no-files-found: warn
+
+        - name: Notify on failure
+          if: failure()
+          env:
+            FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+            RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            WORKFLOW: ${{ github.workflow }}
+            REF: ${{ github.ref_name }}
+          run: |
+            python -c "
+            import os, urllib.request, json
+            url = os.environ.get('FEISHU_WEBHOOK_URL', '')
+            if not url:
+              print('FEISHU_WEBHOOK_URL 未配置，跳过失败通知')
+              exit(0)
+            content = '**Run**: ' + os.environ.get('RUN_URL', '') + '\n**Workflow**: ' + os.environ.get('WORKFLOW', '')
+  + '\n**Branch**: ' + os.environ.get('REF', '')
+            payload = {
+              'msg_type': 'interactive',
+              'card': {
+                'header': {'title': {'tag': 'plain_text', 'content': '❌ 定时任务失败'}},
+                'elements': [{'tag': 'div', 'text': {'tag': 'lark_md', 'content': content}}]
+              }
+            }
+            req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type':
+  'application/json'})
+            try:
+              urllib.request.urlopen(req, timeout=10)
+            except Exception as e:
+              print('warning: 失败通知发送异常:', e)
+            "

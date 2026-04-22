@@ -26,7 +26,7 @@ Web + CLI 双通道，Gemini / Claude / OpenAI 三选一，GitHub Actions 定时
 
 | 能力 | 说明 |
 |------|------|
-| 对话式 Agent | 用自然语言触发诊断、筛选、研报，LLM 自主编排工具调用 |
+| 对话式 Agent | 用自然语言触发诊断、筛选、研报，LLM 自主编排工具调用；还能读写文件、执行命令、抓取网页，帮你操作电脑 |
 | 五层漏斗筛选 | 全市场 ~4500 股 → ~30 候选，六通道 + 板块共振 + 微观狙击 |
 | AI 三阵营研报 | 逻辑破产 / 储备营地 / 起跳板，LLM 独立审判 |
 | 持仓诊断 | 批量体检：均线结构、吸筹阶段、触发信号、止损状态 |
@@ -34,7 +34,9 @@ Web + CLI 双通道，Gemini / Claude / OpenAI 三选一，GitHub Actions 定时
 | 信号确认池 | L4 触发信号经 1-3 天价格确认后才可操作 |
 | 推荐跟踪 | 历史推荐自动同步收盘价、计算累计收益 |
 | 日线回测 | 回放漏斗命中后 N 日收益，输出胜率/Sharpe/最大回撤 |
+| 盘中持仓监控 | TickFlow 实时行情驱动，止损穿破 / 跳空低开 / 放量滞涨 / VWAP 破位四维预警 |
 | 盘前风控 | A50 + VIX 监测，四档预警推送 |
+| 通用 Agent 能力 | 执行命令、读写文件、抓取网页 — 发一个 CSV 路径即可分析，不只是股票工具 |
 | 多通道推送 | 飞书 / 企微 / 钉钉 / Telegram |
 
 ## 数据源
@@ -114,15 +116,15 @@ streamlit run streamlit_app.py
 |:---:|:---:|
 | <img src="attach/web-chat.png" width="450" /> | <img src="attach/web-export.png" width="450" /> |
 
-## 10 个工具
+## 16 个工具
 
-Agent 的武器库，每一个都连接真实的量价引擎：
+Agent 的武器库 — 12 个量价工具 + 4 个通用能力：
 
 | 工具 | 能力 |
 |------|------|
 | `search_stock_by_name` | 名称 / 代码 / 拼音模糊搜索 |
 | `diagnose_stock` | 单股 Wyckoff 结构化诊断 |
-| `diagnose_portfolio` | 批量持仓健康扫描 |
+| `diagnose_portfolio` | 批量持仓健康扫描 + 盘中实时信号 |
 | `get_stock_price` | 近期 OHLCV 行情 |
 | `get_market_overview` | 大盘水温概览 |
 | `screen_stocks` | 五层漏斗全市场筛选 |
@@ -130,8 +132,12 @@ Agent 的武器库，每一个都连接真实的量价引擎：
 | `generate_strategy_decision` | 持仓去留 + 新标买入决策 |
 | `get_recommendation_tracking` | 历史推荐及后续表现 |
 | `get_signal_pending` | 信号确认池查询 |
+| `exec_command` | 执行本地 shell 命令 |
+| `read_file` | 读取本地文件（CSV/Excel 自动解析） |
+| `write_file` | 写入文件（导出报告/数据） |
+| `web_fetch` | 抓取网页内容（财经新闻/公告） |
 
-工具调用顺序和次数由 LLM 实时决策，无需预编排。
+工具调用顺序和次数由 LLM 实时决策，无需预编排。发一个 CSV 路径他就能读；说"帮我装个包"他就能执行。
 
 ## 五层漏斗
 

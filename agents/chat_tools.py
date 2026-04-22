@@ -1120,7 +1120,144 @@ def update_portfolio(
 
 
 # ---------------------------------------------------------------------------
-# 工具列表导出
+# Tool 13-16: Agent 标准工具（仅 CLI，Web 端不暴露）
+# ---------------------------------------------------------------------------
+
+
+def exec_command(command: str, timeout: int = 30, tool_context: ToolContext = None) -> dict:
+    """在用户本地执行 shell 命令并返回输出。
+
+    Args:
+        command: 要执行的 shell 命令
+        timeout: 超时秒数，默认 30
+
+    Returns:
+        包含 stdout, stderr, returncode 的 dict。
+    """
+    import subprocess
+
+    timeout = max(1, min(int(timeout), 120))
+    try:
+        r = subprocess.run(
+            command, shell=True, capture_output=True, text=True,
+            timeout=timeout, cwd=os.path.expanduser("~"),
+        )
+        return {
+            "stdout": r.stdout[:8000] + ("...(截断)" if len(r.stdout) > 8000 else ""),
+            "stderr": r.stderr[:2000] + ("...(截断)" if len(r.stderr) > 2000 else ""),
+            "returncode": r.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": f"命令超时（{timeout}s）", "returncode": -1}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def read_file(path: str, encoding: str = "utf-8", tool_context: ToolContext = None) -> dict:
+    """读取用户本地文件内容。支持 txt/csv/json/xlsx 等格式，CSV 自动解析为表格预览。
+
+    Args:
+        path: 文件绝对路径或 ~ 开头的路径
+        encoding: 文件编码，默认 utf-8
+
+    Returns:
+        包含 path, size, content 的 dict。CSV 返回 markdown 表格预览。
+    """
+    import pathlib
+
+    p = pathlib.Path(path).expanduser().resolve()
+    if not p.exists():
+        return {"error": f"文件不存在: {p}"}
+    if not p.is_file():
+        return {"error": f"不是文件: {p}"}
+    size = p.stat().st_size
+    if size > 50 * 1024 * 1024:
+        return {"error": f"文件过大 ({size / 1024 / 1024:.1f}MB)，上限 50MB"}
+
+    suffix = p.suffix.lower()
+    try:
+        if suffix == ".csv":
+            import pandas as pd
+            df = pd.read_csv(p, encoding=encoding, nrows=50)
+            preview = df.to_markdown(index=False)
+            return {"path": str(p), "size": size, "rows_total": "≤50(预览)", "content": preview}
+        elif suffix in (".xls", ".xlsx"):
+            import pandas as pd
+            df = pd.read_excel(p, nrows=50)
+            preview = df.to_markdown(index=False)
+            return {"path": str(p), "size": size, "rows_total": "≤50(预览)", "content": preview}
+        elif suffix == ".json":
+            import json as _json
+            text = p.read_text(encoding=encoding)[:10000]
+            try:
+                obj = _json.loads(text)
+                content = _json.dumps(obj, ensure_ascii=False, indent=2)[:10000]
+            except _json.JSONDecodeError:
+                content = text
+            return {"path": str(p), "size": size, "content": content}
+        else:
+            text = p.read_text(encoding=encoding)
+            return {
+                "path": str(p), "size": size,
+                "content": text[:10000] + ("...(截断)" if len(text) > 10000 else ""),
+            }
+    except Exception as e:
+        return {"error": f"读取失败: {e}"}
+
+
+def write_file(path: str, content: str, encoding: str = "utf-8", tool_context: ToolContext = None) -> dict:
+    """将内容写入用户本地文件。自动创建父目录。
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+        encoding: 文件编码，默认 utf-8
+
+    Returns:
+        包含 path, size 的 dict。
+    """
+    import pathlib
+
+    p = pathlib.Path(path).expanduser().resolve()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding=encoding)
+        return {"path": str(p), "size": p.stat().st_size}
+    except Exception as e:
+        return {"error": f"写入失败: {e}"}
+
+
+def web_fetch(url: str, tool_context: ToolContext = None) -> dict:
+    """抓取指定 URL 的网页内容并返回纯文本。
+
+    Args:
+        url: 要抓取的网页 URL
+
+    Returns:
+        包含 url, status, content 的 dict。
+    """
+    import re
+
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "Wyckoff-Agent/1.0"})
+        resp.raise_for_status()
+        ctype = resp.headers.get("content-type", "")
+        if "json" in ctype:
+            text = resp.text[:8000]
+        elif "html" in ctype:
+            text = re.sub(r"<script[^>]*>.*?</script>", "", resp.text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()[:8000]
+        else:
+            text = resp.text[:8000]
+        return {"url": url, "status": resp.status_code, "content": text}
+    except Exception as e:
+        return {"error": f"抓取失败: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# 工具列表导出（Web/Streamlit 端，不含 exec/read/write/web_fetch）
 # ---------------------------------------------------------------------------
 
 WYCKOFF_TOOLS = [

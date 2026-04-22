@@ -182,6 +182,55 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "properties": {},
         },
     },
+    # ── Agent 标准工具 ──
+    {
+        "name": "exec_command",
+        "description": "在用户本地执行 shell 命令并返回输出。可用于安装软件、查看系统状态、运行脚本等。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "要执行的 shell 命令"},
+                "timeout": {"type": "integer", "description": "超时秒数，默认 30，最大 120"},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "读取用户本地文件内容。支持 txt/csv/json/xlsx 等格式。用户发来文件路径时使用此工具。CSV/Excel 自动解析为表格预览（前 50 行）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径（绝对路径或 ~ 开头）"},
+                "encoding": {"type": "string", "description": "文件编码，默认 utf-8"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "将内容写入用户本地文件。自动创建父目录。可用于导出分析报告、保存数据等。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "content": {"type": "string", "description": "要写入的内容"},
+                "encoding": {"type": "string", "description": "文件编码，默认 utf-8"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "web_fetch",
+        "description": "抓取指定 URL 的网页内容并返回纯文本。可用于查看财经新闻、公告、在线数据等。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "要抓取的网页 URL"},
+            },
+            "required": ["url"],
+        },
+    },
 ]
 
 # 后台执行的长任务工具
@@ -202,6 +251,10 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
     "get_portfolio": "查看持仓",
     "update_portfolio": "调仓操作",
     "check_background_tasks": "任务状态",
+    "exec_command": "执行命令",
+    "read_file": "读取文件",
+    "write_file": "写入文件",
+    "web_fetch": "抓取网页",
 }
 
 
@@ -247,6 +300,10 @@ class ToolRegistry:
             get_recommendation_tracking,
             get_signal_pending,
             update_portfolio,
+            exec_command,
+            read_file,
+            write_file,
+            web_fetch,
         )
         return {
             "search_stock_by_name": search_stock_by_name,
@@ -261,6 +318,10 @@ class ToolRegistry:
             "get_recommendation_tracking": get_recommendation_tracking,
             "get_signal_pending": get_signal_pending,
             "update_portfolio": update_portfolio,
+            "exec_command": exec_command,
+            "read_file": read_file,
+            "write_file": write_file,
+            "web_fetch": web_fetch,
         }
 
     def schemas(self) -> list[dict[str, Any]]:

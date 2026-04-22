@@ -45,6 +45,7 @@ def reset_user_settings_state() -> None:
     st.session_state.dingtalk_webhook = ""
     st.session_state.gemini_api_key = ""
     st.session_state.tushare_token = ""
+    st.session_state.tickflow_api_key = ""
     st.session_state.gemini_model = DEFAULT_GEMINI_MODEL
     st.session_state.gemini_base_url = ""
     st.session_state.tg_bot_token = ""
@@ -168,6 +169,7 @@ def load_user_settings(user_id: str):
 
             # 其它
             st.session_state.tushare_token = settings.get("tushare_token") or ""
+            st.session_state.tickflow_api_key = settings.get("tickflow_api_key") or ""
             st.session_state.tg_bot_token = settings.get("tg_bot_token") or ""
             st.session_state.tg_chat_id = settings.get("tg_chat_id") or ""
             return True

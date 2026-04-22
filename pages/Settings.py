@@ -96,6 +96,7 @@ with content_col:
             "custom_providers": custom_providers,
             # 其它
             "tushare_token": st.session_state.tushare_token,
+            "tickflow_api_key": st.session_state.tickflow_api_key,
             "tg_bot_token": st.session_state.tg_bot_token,
             "tg_chat_id": st.session_state.tg_chat_id,
         }
@@ -337,7 +338,15 @@ with content_col:
         # 3. 数据源
         st.subheader("📊 数据源配置")
         with st.container(border=True):
-            st.markdown("**Tushare Token**（可选）用于高级补充数据。日线主链路默认优先 TickFlow，不可用时再回退 Tushare/akshare/baostock/efinance。")
+            st.markdown("**TickFlow API Key**（推荐）解锁实时行情 + 分钟K线 + 盘中监控。[注册购买 →](https://tickflow.org/auth/register?ref=5N4NKTCPL4)")
+            new_tickflow = st.text_input(
+                "TickFlow API Key",
+                value=st.session_state.tickflow_api_key,
+                type="password",
+                placeholder="tk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                key="tickflow_input",
+            )
+            st.markdown("**Tushare Token**（可选）用于高级补充数据。日线主链路优先 TickFlow，不可用时回退 Tushare/akshare/baostock/efinance。")
             new_tushare = st.text_input(
                 "Tushare Token",
                 value=st.session_state.tushare_token,
@@ -346,6 +355,7 @@ with content_col:
                 key="tushare_input",
             )
             if st.button("💾 保存数据源配置", key="save_tushare"):
+                st.session_state.tickflow_api_key = new_tickflow
                 st.session_state.tushare_token = new_tushare
                 on_save_settings()
 

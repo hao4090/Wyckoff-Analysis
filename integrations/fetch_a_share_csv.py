@@ -82,7 +82,7 @@ def _trade_dates() -> list[date]:
             return
 
     def _fetch_from_akshare_calendar() -> list[date]:
-        """优先使用 akshare 提供的交易日历接口，降低手动 JS 解析脆弱性。"""
+        """优先使用 akshare 提供的交易日历接口，tushare token 无效时自动 fallback。"""
         df = ak.tool_trade_date_hist_sina()
         if df is None or df.empty:
             raise RuntimeError("akshare trade calendar empty")
@@ -269,7 +269,7 @@ def get_all_stocks() -> list[dict[str, str]]:
         # 缓存读取异常不应阻塞后续网络尝试
         pass
 
-    # 1. tushare 优先
+    # 1. tushare 优先（token 无效时自动 fallback 到 akshare）
     try:
         from integrations.tushare_client import get_pro
 
@@ -293,7 +293,7 @@ def get_all_stocks() -> list[dict[str, str]]:
     except Exception as e:
         print(f"Tushare error fetching stock list: {e}. Trying akshare...")
 
-    # 2. 尝试从 akshare 获取最新数据
+    # 2. akshare fallback（tushare 不可用时）
     try:
         info = ak.stock_info_a_code_name()
         info["code"] = info["code"].astype(str)
@@ -309,11 +309,11 @@ def get_all_stocks() -> list[dict[str, str]]:
         return records
     except Exception as e:
         print(f"Network error fetching stock list: {e}. Trying cache...")
-        # 3. 网络失败，尝试读取缓存（即使已过期也比空好）
+        # 3. 缓存 fallback（网络失败时）
         cached = _read_cache()
         if cached:
             return cached
-        # 4. 缓存也没数据，返回空
+        # 4. 无可用数据，返回空
         return []
 
 

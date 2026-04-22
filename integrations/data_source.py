@@ -4,7 +4,7 @@
 # 商业授权请联系作者支付授权费用。
 
 """
-统一数据源：个股日线 tushare 优先（qfq）→ akshare→baostock→efinance；大盘 tushare 直连
+统一数据源：个股日线 tushare 优先（qfq）→ baostock→akshare→efinance；大盘 tushare 直连
 
 输出格式与 akshare 兼容：日期, 开盘, 最高, 最低, 收盘, 成交量, 成交额, 涨跌幅, 换手率, 振幅
 """
@@ -641,7 +641,7 @@ def fetch_stock_hist(
     adjust: Literal["", "qfq", "hfq"] = "qfq",
 ) -> pd.DataFrame:
     """
-    个股日线：tushare 优先（固定 qfq），失败时回退 akshare/baostock/efinance。
+    个股日线：tushare 优先（固定 qfq），失败时回退 baostock/akshare/efinance。
     可用环境变量按需禁用数据源：
     - DATA_SOURCE_DISABLE_AKSHARE=1
     - DATA_SOURCE_DISABLE_BAOSTOCK=1
@@ -664,6 +664,7 @@ def fetch_stock_hist(
     pro = get_pro()
 
     # 1) tushare 优先（固定 qfq）
+    # 若 token 无效导致调用失败，自动 failover 到 baostock/akshare
     if pro is not None:
         try:
             return _tag_source(
@@ -673,6 +674,8 @@ def fetch_stock_hist(
             _debug_source_fail("tushare", e)
             failed_sources.append("tushare")
             failed_details.append(f"tushare={_compact_error(e)}")
+            # token 无效时重置 pro，强制后续调用直接走 fallback
+            pro = None
     else:
         failed_sources.append("tushare(unconfigured)")
         failed_details.append("tushare=token_missing")
@@ -696,34 +699,7 @@ def fetch_stock_hist(
         "on",
     }
 
-    # 2. akshare
-    if disable_akshare:
-        failed_sources.append("akshare(disabled)")
-        failed_details.append("akshare=disabled_by_env")
-    else:
-        last_akshare_err: Exception | None = None
-        for attempt in range(1, _AKSHARE_RETRY_TIMES + 1):
-            try:
-                return _tag_source(
-                    _fetch_stock_akshare(symbol, start_s, end_s, adjust), "akshare"
-                )
-            except ModuleNotFoundError as e:
-                _debug_source_fail("akshare", e)
-                failed_sources.append(f"akshare(缺少依赖 {e.name})")
-                failed_details.append(f"akshare={_compact_error(e)}")
-                last_akshare_err = e
-                break
-            except Exception as e:
-                last_akshare_err = e
-                _debug_source_fail("akshare", e)
-                if attempt < _AKSHARE_RETRY_TIMES and _is_retryable_akshare_error(e):
-                    time.sleep(max(_AKSHARE_RETRY_SLEEP_SECONDS, 0.0))
-                    continue
-                failed_sources.append("akshare")
-                failed_details.append(f"akshare={_compact_error(e)}")
-                break
-
-    # 3. baostock (仅前复权)
+    # 2. baostock (仅前复权) - tushare token 无效时优先 fallback 到 baostock
     baostock_circuit_open, baostock_circuit_note = _baostock_circuit_state()
     if disable_baostock:
         failed_sources.append("baostock(disabled)")
@@ -754,6 +730,34 @@ def fetch_stock_hist(
             failed_sources.append("baostock")
             failed_details.append(f"baostock={_compact_error(e)}")
 
+
+    # 3. akshare - baostock 失败后 fallback 到 akshare
+    if disable_akshare:
+        failed_sources.append("akshare(disabled)")
+        failed_details.append("akshare=disabled_by_env")
+    else:
+        last_akshare_err: Exception | None = None
+        for attempt in range(1, _AKSHARE_RETRY_TIMES + 1):
+            try:
+                return _tag_source(
+                    _fetch_stock_akshare(symbol, start_s, end_s, adjust), "akshare"
+                )
+            except ModuleNotFoundError as e:
+                _debug_source_fail("akshare", e)
+                failed_sources.append(f"akshare(缺少依赖 {e.name})")
+                failed_details.append(f"akshare={_compact_error(e)}")
+                last_akshare_err = e
+                break
+            except Exception as e:
+                last_akshare_err = e
+                _debug_source_fail("akshare", e)
+                if attempt < _AKSHARE_RETRY_TIMES and _is_retryable_akshare_error(e):
+                    time.sleep(max(_AKSHARE_RETRY_SLEEP_SECONDS, 0.0))
+                    continue
+                failed_sources.append("akshare")
+                failed_details.append(f"akshare={_compact_error(e)}")
+                break
+
     # 4. efinance (仅前复权)
     if disable_efinance:
         failed_sources.append("efinance(disabled)")
@@ -778,7 +782,7 @@ def fetch_stock_hist(
     hint = _network_hint_from_details(failed_details)
     hint_suffix = f" 诊断提示：{hint}" if hint else ""
     raise RuntimeError(
-        f"数据拉取全线失败 [标:{symbol}, 范围:{start_s}..{end_s}, 复权:{adjust}]：已按顺序尝试 tushare→akshare→baostock→efinance，"
+        f"数据拉取全线失败 [标:{symbol}, 范围:{start_s}..{end_s}, 复权:{adjust}]：已按顺序尝试 tushare→baostock→akshare→efinance，"
         f"均无可用 K 线数据。请检查该标的是否已退市或处于长期停牌期。{detail_suffix}{hint_suffix}"
     )
 
@@ -814,29 +818,12 @@ def _fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
     """akshare 大盘指数日线 fallback（tushare 不可用时自动降级）。"""
     import akshare as ak
 
-    # 000001 = 上证指数，akshare 需要映射
-    symbol_map = {
-        "000001": "sh000001",  # 上证指数
-        "399000": "sz399000",  # 深证成指
-        "399005": "sz399005",  # 中小板指
-        "399006": "sz399006",  # 创业板指
-        "399300": "sh000300",  # 沪深 300
-    }
-    ak_symbol = symbol_map.get(code, f"sh{code}" if code.startswith("000") else f"sz{code}")
-
-    try:
-        # 使用 ak.index_zh_a_hist
-        df = ak.index_zh_a_hist(
-            symbol=ak_symbol,
-            period="daily",
-            start_date=start,
-            end_date=end,
-        )
-    except Exception:
-        # Fallback: 使用 ak.stock_zh_index_daily
-        df = ak.stock_zh_index_daily(symbol=ak_symbol)
-        df = df[(df["date"] >= start) & (df["date"] <= end)]
-
+    df = ak.index_zh_a_hist(
+        symbol=code,
+        period="daily",
+        start_date=start,
+        end_date=end,
+    )
     if df is None or df.empty:
         raise RuntimeError("akshare 大盘指数返回空数据")
     df = df.rename(
@@ -875,14 +862,12 @@ def fetch_index_hist(code: str, start: str | date, end: str | date) -> pd.DataFr
     try:
         return _fetch_index_tushare(code, start_s, end_s)
     except Exception as e:
-        print(f"[data_source] 大盘指数 tushare 失败：{e}")
         _debug_source_fail("tushare(index)", e)
 
     # 2) akshare fallback
     try:
         return _fetch_index_akshare(code, start_s, end_s)
     except Exception as e2:
-        print(f"[data_source] 大盘指数 akshare 失败：{e2}")
         _debug_source_fail("akshare(index)", e2)
 
     raise RuntimeError(

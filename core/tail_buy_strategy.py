@@ -577,6 +577,7 @@ def build_tail_buy_markdown(
     llm_route_stats: dict[str, int] | None = None,
     elapsed_seconds: float,
     extra_sections: list[str] | None = None,
+    extra_sections_first: bool = False,
 ) -> str:
     counts = summarize_decision_counts(candidates)
     llm_route_plan = list(llm_route_plan or [])
@@ -619,14 +620,25 @@ def build_tail_buy_markdown(
             )
         lines.append("")
 
-    _append_block("BUY（优先关注）", DECISION_BUY)
-    _append_block("WATCH（观察）", DECISION_WATCH)
-    _append_block("SKIP（暂不买入）", DECISION_SKIP)
+    cleaned_sections: list[str] = []
     for section in extra_sections or []:
         text = str(section or "").strip()
         if not text:
             continue
-        lines.append(text)
-        lines.append("")
+        cleaned_sections.append(text)
+
+    if extra_sections_first:
+        for text in cleaned_sections:
+            lines.append(text)
+            lines.append("")
+
+    _append_block("BUY（优先关注）", DECISION_BUY)
+    _append_block("WATCH（观察）", DECISION_WATCH)
+    _append_block("SKIP（暂不买入）", DECISION_SKIP)
+
+    if not extra_sections_first:
+        for text in cleaned_sections:
+            lines.append(text)
+            lines.append("")
     lines.append("说明：本任务仅输出尾盘扫描建议，不生成订单，不写入交易表。")
     return "\n".join(lines).strip() + "\n"

@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 if __name__ == "__main__" or not __package__:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.constants import TABLE_SIGNAL_PENDING
+from core.constants import TABLE_PORTFOLIOS, TABLE_SIGNAL_PENDING
 from core.tail_buy_strategy import (
     DECISION_BUY,
     DECISION_SKIP,
@@ -194,6 +194,67 @@ def _dedupe_texts(values: list[str], limit: int = 3) -> list[str]:
     return out
 
 
+def _normalize_effective_positions(raw_positions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    positions: list[dict[str, Any]] = []
+    stats = {
+        "raw": 0,
+        "active": 0,
+        "invalid_code": 0,
+        "zero_shares": 0,
+        "invalid_row": 0,
+    }
+    for row in raw_positions or []:
+        stats["raw"] += 1
+        if not isinstance(row, dict):
+            stats["invalid_row"] += 1
+            continue
+        code = "".join(ch for ch in str(row.get("code", "") or "").strip() if ch.isdigit()).zfill(6)
+        if len(code) != 6:
+            stats["invalid_code"] += 1
+            continue
+        shares = int(_safe_float(row.get("shares"), 0))
+        if shares <= 0:
+            stats["zero_shares"] += 1
+            continue
+        stats["active"] += 1
+        positions.append(
+            {
+                "code": code,
+                "name": str(row.get("name", "") or code).strip() or code,
+                "shares": shares,
+                "cost": _safe_float(row.get("cost"), 0.0),
+                "stop_loss": row.get("stop_loss"),
+            }
+        )
+    return positions, stats
+
+
+def _discover_user_live_portfolios(logs_path: str | None = None, limit: int = 30) -> list[str]:
+    try:
+        client = create_admin_client()
+        rows = (
+            client.table(TABLE_PORTFOLIOS)
+            .select("portfolio_id,updated_at")
+            .like("portfolio_id", "USER_LIVE:%")
+            .order("updated_at", desc=True)
+            .limit(max(int(limit), 1))
+            .execute()
+            .data
+            or []
+        )
+        ids = [
+            str(row.get("portfolio_id", "") or "").strip()
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        ids = [x for x in ids if x]
+        _log(f"持仓回退候选: USER_LIVE:* count={len(ids)}", logs_path)
+        return ids
+    except Exception as e:
+        _log(f"持仓回退候选查询失败: {e}", logs_path)
+        return []
+
+
 def _analyze_holdings_actions(
     *,
     tickflow_client: TickFlowClient,
@@ -205,39 +266,69 @@ def _analyze_holdings_actions(
     deadline_at: datetime,
     logs_path: str | None = None,
 ) -> tuple[list[HoldingAdvice], bool, str]:
-    state = load_portfolio_state(portfolio_id)
-    if not isinstance(state, dict):
-        return [], False, f"组合 {portfolio_id} 不存在或不可读取"
-
-    raw_positions = list(state.get("positions") or [])
+    requested_portfolio_id = str(portfolio_id or "").strip() or "USER_LIVE"
+    resolved_portfolio_id = requested_portfolio_id
+    state = load_portfolio_state(requested_portfolio_id)
     positions: list[dict[str, Any]] = []
-    for row in raw_positions:
-        if not isinstance(row, dict):
-            continue
-        code = "".join(ch for ch in str(row.get("code", "") or "").strip() if ch.isdigit()).zfill(6)
-        if len(code) != 6:
-            continue
-        shares = int(_safe_float(row.get("shares"), 0))
-        if shares <= 0:
-            continue
-        positions.append(
-            {
-                "code": code,
-                "name": str(row.get("name", "") or code).strip() or code,
-                "shares": shares,
-                "cost": _safe_float(row.get("cost"), 0.0),
-                "stop_loss": row.get("stop_loss"),
-            }
+    position_stats = {
+        "raw": 0,
+        "active": 0,
+        "invalid_code": 0,
+        "zero_shares": 0,
+        "invalid_row": 0,
+    }
+    if isinstance(state, dict):
+        raw_positions = list(state.get("positions") or [])
+        positions, position_stats = _normalize_effective_positions(raw_positions)
+        _log(
+            f"持仓读取: requested={requested_portfolio_id}, resolved={resolved_portfolio_id}, "
+            f"raw={position_stats['raw']}, active={position_stats['active']}, "
+            f"invalid_code={position_stats['invalid_code']}, zero_shares={position_stats['zero_shares']}, "
+            f"invalid_row={position_stats['invalid_row']}",
+            logs_path,
         )
+    elif requested_portfolio_id == "USER_LIVE":
+        _log("持仓读取: USER_LIVE 不存在或读取失败，尝试回退 USER_LIVE:*", logs_path)
+
+    if requested_portfolio_id == "USER_LIVE" and (not isinstance(state, dict) or not positions):
+        for candidate_id in _discover_user_live_portfolios(logs_path=logs_path, limit=30):
+            fallback_state = load_portfolio_state(candidate_id)
+            if not isinstance(fallback_state, dict):
+                continue
+            fallback_positions, fallback_stats = _normalize_effective_positions(
+                list(fallback_state.get("positions") or [])
+            )
+            if not fallback_positions:
+                continue
+            state = fallback_state
+            positions = fallback_positions
+            position_stats = fallback_stats
+            resolved_portfolio_id = candidate_id
+            _log(
+                f"持仓回退命中: requested=USER_LIVE -> resolved={resolved_portfolio_id}, "
+                f"raw={position_stats['raw']}, active={position_stats['active']}",
+                logs_path,
+            )
+            break
+
+    if not isinstance(state, dict):
+        return [], False, f"组合 {requested_portfolio_id} 不存在或不可读取"
 
     if not positions:
-        meta = f"portfolio={portfolio_id}, state_sig={state.get('state_signature', '-')}"
+        meta = (
+            f"portfolio={resolved_portfolio_id}, state_sig={state.get('state_signature', '-')}, "
+            f"raw_positions={position_stats['raw']}, active_positions={position_stats['active']}, "
+            f"invalid_code={position_stats['invalid_code']}, zero_shares={position_stats['zero_shares']}"
+        )
+        if requested_portfolio_id == "USER_LIVE":
+            meta += "（提示：USER_LIVE 无有效仓位；请检查是否应使用 USER_LIVE:<user_id>）"
         return [], False, meta
 
     symbols = [normalize_cn_symbol(p["code"]) for p in positions]
     symbol_set = sorted(set([s for s in symbols if s]))
     _log(
-        f"持仓动作分析开始: portfolio={portfolio_id}, positions={len(positions)}, symbols={len(symbol_set)}",
+        f"持仓动作分析开始: requested={requested_portfolio_id}, resolved={resolved_portfolio_id}, "
+        f"positions={len(positions)}, symbols={len(symbol_set)}",
         logs_path,
     )
 
@@ -406,7 +497,12 @@ def _analyze_holdings_actions(
         f"hold={len(out)-add_count-trim_count}, tickflow_limit_hit={tickflow_limit_hit}",
         logs_path,
     )
-    meta = f"portfolio={portfolio_id}, state_sig={state.get('state_signature', '-')}"
+    meta = (
+        f"portfolio={resolved_portfolio_id}, state_sig={state.get('state_signature', '-')}, "
+        f"raw_positions={position_stats['raw']}, active_positions={position_stats['active']}"
+    )
+    if requested_portfolio_id != resolved_portfolio_id:
+        meta += f"（fallback from {requested_portfolio_id}）"
     return out, tickflow_limit_hit, meta
 
 
@@ -432,8 +528,8 @@ def _build_holdings_markdown(
     lines.append(f"- 持仓数量: {len(holdings)}")
     lines.append(
         f"- 动作分布: ADD={counter.get(HOLDING_ACTION_ADD, 0)} / "
-        f"HOLD={counter.get(HOLDING_ACTION_HOLD, 0)} / "
-        f"TRIM={counter.get(HOLDING_ACTION_TRIM, 0)}"
+        f"HOLD（持有观察）={counter.get(HOLDING_ACTION_HOLD, 0)} / "
+        f"TRIM（减仓）={counter.get(HOLDING_ACTION_TRIM, 0)}"
     )
     if tickflow_limit_hit:
         lines.append(f"- ⚠️ {TICKFLOW_UPGRADE_HINT}")
@@ -459,7 +555,7 @@ def _build_holdings_markdown(
 
     _append_block("ADD（可考虑加仓）", HOLDING_ACTION_ADD)
     _append_block("TRIM（可考虑减仓）", HOLDING_ACTION_TRIM)
-    _append_block("HOLD（继续持有）", HOLDING_ACTION_HOLD)
+    _append_block("HOLD（持有观察）", HOLDING_ACTION_HOLD)
     lines.append("说明：持仓动作仅为盘中辅助建议，不自动下单。")
     return "\n".join(lines)
 
@@ -1049,6 +1145,24 @@ def main() -> int:
         api_key=tickflow_api_key,
         max_retries=tickflow_task_retries,
     )
+
+    signal_map = {x.code: x for x in pending_candidates}
+    holdings, holdings_limit_hit, portfolio_meta = _analyze_holdings_actions(
+        tickflow_client=tickflow_client,
+        portfolio_id=portfolio_id,
+        signal_map=signal_map,
+        style=style,
+        intraday_batch_size=intraday_batch_size,
+        hard_stop_pct=holding_hard_stop_pct,
+        deadline_at=deadline_at,
+        logs_path=logs_path,
+    )
+    holdings_section = _build_holdings_markdown(
+        holdings=holdings,
+        portfolio_meta=portfolio_meta,
+        tickflow_limit_hit=holdings_limit_hit,
+    )
+
     scored: list[TailBuyCandidate] = []
     merged: list[TailBuyCandidate] = []
     llm_total = 0
@@ -1147,23 +1261,6 @@ def main() -> int:
         merged = merge_rule_and_llm(scored, llm_map)
     else:
         _log("候选池为空：本轮仅输出持仓动作建议。", logs_path)
-
-    signal_map = {x.code: x for x in pending_candidates}
-    holdings, holdings_limit_hit, portfolio_meta = _analyze_holdings_actions(
-        tickflow_client=tickflow_client,
-        portfolio_id=portfolio_id,
-        signal_map=signal_map,
-        style=style,
-        intraday_batch_size=intraday_batch_size,
-        hard_stop_pct=holding_hard_stop_pct,
-        deadline_at=deadline_at,
-        logs_path=logs_path,
-    )
-    holdings_section = _build_holdings_markdown(
-        holdings=holdings,
-        portfolio_meta=portfolio_meta,
-        tickflow_limit_hit=holdings_limit_hit,
-    )
     elapsed = (_now() - started_at).total_seconds()
     decision_counter = Counter([str(x.final_decision or "").strip() or "UNKNOWN" for x in merged])
     _log(
@@ -1184,6 +1281,7 @@ def main() -> int:
         llm_route_stats=llm_route_stats,
         elapsed_seconds=elapsed,
         extra_sections=[holdings_section],
+        extra_sections_first=True,
     )
     feishu_ok, tg_ok = _send_notifications(
         feishu_webhook=feishu_webhook,

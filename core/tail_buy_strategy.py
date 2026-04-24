@@ -514,6 +514,44 @@ def parse_llm_decision(raw_text: str) -> dict[str, Any] | None:
     }
 
 
+def select_llm_overlay_candidates(
+    candidates: list[TailBuyCandidate],
+    *,
+    max_llm_symbols: int,
+    min_rule_score: float = 60.0,
+    allowed_rule_decisions: tuple[str, ...] = (DECISION_BUY, DECISION_WATCH),
+) -> list[TailBuyCandidate]:
+    """
+    在 Python 规则层先收紧 LLM 二判候选：
+    - 仅保留无 fetch_error 的标的
+    - 仅保留规则结论在 allowed_rule_decisions 内的标的
+    - 仅保留 rule_score >= min_rule_score 的标的
+    - 最后按 rule_score 倒序截断到 max_llm_symbols
+    """
+    limit = max(int(max_llm_symbols), 0)
+    if limit <= 0 or not candidates:
+        return []
+
+    allowed = {
+        str(x or "").strip().upper()
+        for x in (allowed_rule_decisions or ())
+        if str(x or "").strip()
+    }
+    if not allowed:
+        return []
+
+    floor = max(_safe_float(min_rule_score, 0.0), 0.0)
+    selected = [
+        item
+        for item in candidates
+        if not item.fetch_error
+        and str(item.rule_decision or "").strip().upper() in allowed
+        and _safe_float(item.rule_score, 0.0) >= floor
+    ]
+    selected.sort(key=lambda x: (-x.rule_score, x.code))
+    return selected[:limit]
+
+
 def merge_rule_and_llm(
     candidates: list[TailBuyCandidate],
     llm_result_by_code: dict[str, dict[str, Any]] | None = None,

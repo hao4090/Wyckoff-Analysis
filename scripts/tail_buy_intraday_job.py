@@ -35,6 +35,7 @@ from core.tail_buy_strategy import (
     parse_llm_decision,
     pick_tail_candidates,
     score_tail_features,
+    select_llm_overlay_candidates,
 )
 from integrations.fetch_a_share_csv import _resolve_trading_window
 from integrations.llm_client import DEFAULT_GEMINI_MODEL, OPENAI_COMPATIBLE_BASE_URLS, call_llm
@@ -902,6 +903,8 @@ def _run_llm_overlay(
     llm_routes: list[dict[str, str]],
     style: str,
     max_llm_symbols: int,
+    min_rule_score: float,
+    allowed_rule_decisions: tuple[str, ...],
     llm_concurrency: int,
     deadline_at: datetime,
     depth_map: dict[str, dict] | None = None,
@@ -916,7 +919,21 @@ def _run_llm_overlay(
     eligible = [x for x in candidates if not x.fetch_error]
     if not eligible:
         return {}, 0, 0, {}
-    top_items = sorted(eligible, key=lambda x: (-x.rule_score, x.code))[:max_llm_symbols]
+    top_items = select_llm_overlay_candidates(
+        eligible,
+        max_llm_symbols=max_llm_symbols,
+        min_rule_score=min_rule_score,
+        allowed_rule_decisions=allowed_rule_decisions,
+    )
+    _log(
+        "LLM候选过滤: "
+        f"eligible={len(eligible)}, selected={len(top_items)}, "
+        f"allowed={','.join(allowed_rule_decisions) or 'NONE'}, min_rule_score={min_rule_score:.1f}",
+        logs_path,
+    )
+    if not top_items:
+        _log("LLM候选过滤后为空：跳过二判，保留纯规则结果。", logs_path)
+        return {}, 0, 0, {}
     total = len(top_items)
     ok = 0
     out: dict[str, dict] = {}
@@ -944,6 +961,7 @@ def _run_llm_overlay(
                     base_url=(route.get("base_url") or None),
                     timeout=timeout,
                     max_output_tokens=512,
+                    allow_truncated_text=True,
                 )
                 parsed = parse_llm_decision(text)
                 if parsed:
@@ -1135,6 +1153,12 @@ def main() -> int:
     fetch_concurrency = max(int(os.getenv("TAIL_BUY_FETCH_CONCURRENCY", "8")), 1)
     llm_concurrency = max(int(os.getenv("TAIL_BUY_LLM_CONCURRENCY", "4")), 1)
     max_llm_symbols = max(int(args.max_llm_symbols or 20), 0)
+    llm_min_rule_score = max(_safe_float(os.getenv("TAIL_BUY_LLM_MIN_RULE_SCORE", "60"), 60.0), 0.0)
+    llm_allowed_rule_decisions = tuple(
+        x.strip().upper()
+        for x in str(os.getenv("TAIL_BUY_LLM_ALLOWED_RULE_DECISIONS", "BUY,WATCH") or "").split(",")
+        if x.strip()
+    ) or (DECISION_BUY, DECISION_WATCH)
     intraday_limit_per_min = max(int(os.getenv("TAIL_BUY_INTRADAY_LIMIT_PER_MIN", "30")), 1)
     max_over_limit_symbols = max(
         min(int(os.getenv("TAIL_BUY_MAX_OVER_LIMIT_SYMBOLS", "5")), 5),
@@ -1151,7 +1175,8 @@ def main() -> int:
     _log(
         f"config: provider={provider}, model={model}, style={style}, "
         f"fetch_concurrency={fetch_concurrency}, llm_concurrency={llm_concurrency}, "
-        f"max_llm_symbols={max_llm_symbols}, deadline={deadline_min}m, "
+        f"max_llm_symbols={max_llm_symbols}, llm_min_rule_score={llm_min_rule_score}, "
+        f"llm_allowed_rule_decisions={','.join(llm_allowed_rule_decisions)}, deadline={deadline_min}m, "
         f"portfolio_id={portfolio_id}, holding_hard_stop_pct={holding_hard_stop_pct}, "
         f"intraday_limit={intraday_limit_per_min}/min, max_over_limit={max_over_limit_symbols}, "
         f"force_over_limit={force_over_limit}, tickflow_retries={tickflow_task_retries}, "
@@ -1291,6 +1316,8 @@ def main() -> int:
             llm_routes=llm_routes,
             style=style,
             max_llm_symbols=max_llm_symbols,
+            min_rule_score=llm_min_rule_score,
+            allowed_rule_decisions=llm_allowed_rule_decisions,
             llm_concurrency=llm_concurrency,
             deadline_at=deadline_at,
             depth_map=depth_map,

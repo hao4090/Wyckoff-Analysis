@@ -80,6 +80,7 @@ def call_llm_via_litellm(
     max_output_tokens: Optional[int] = None,
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float = DEFAULT_TOP_P,
+    allow_truncated_text: bool = False,
 ) -> str:
     """
     通过 LiteLLM 调用任意 provider 的 LLM。
@@ -102,6 +103,7 @@ def call_llm_via_litellm(
     litellm_model = _resolve_litellm_model(provider, model)
     resolved_base_url = _resolve_base_url(provider, base_url)
     max_tokens = max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS
+    _ = allow_truncated_text
 
     logger.info(
         "LiteLLM call: provider=%s model=%s litellm_model=%s base_url=%s max_tokens=%d",
@@ -150,5 +152,4 @@ def call_llm_via_litellm(
         getattr(response.usage, "completion_tokens", "?"),
     )
     return content.strip()
-
 

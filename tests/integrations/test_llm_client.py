@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,4 +123,87 @@ class TestLiteLLMSwitch:
                     api_key="fake-key",
                     system_prompt="test",
                     user_message="hello",
+                )
+
+
+class TestGeminiTruncationHandling:
+    @staticmethod
+    def _install_fake_google_genai(response):
+        google_mod = ModuleType("google")
+        genai_mod = ModuleType("google.genai")
+        types_mod = ModuleType("google.genai.types")
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.models = SimpleNamespace(
+                    generate_content=MagicMock(return_value=response)
+                )
+
+        class FakeConfig:
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        genai_mod.Client = FakeClient
+        types_mod.GenerateContentConfig = FakeConfig
+        genai_mod.types = types_mod
+        google_mod.genai = genai_mod
+        return {
+            "google": google_mod,
+            "google.genai": genai_mod,
+            "google.genai.types": types_mod,
+        }
+
+    def test_gemini_truncation_can_return_text_when_allowed(self):
+        from integrations.llm_client import _call_gemini
+
+        response = SimpleNamespace(
+            text='{"decision":"BUY","reason":"ok","risk":"low","confidence":0.8}',
+            candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")],
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=100,
+                candidates_token_count=20,
+                total_token_count=120,
+            ),
+        )
+        fake_modules = self._install_fake_google_genai(response)
+        with patch.dict(sys.modules, fake_modules, clear=False):
+            out = _call_gemini(
+                model="gemini-pro-latest",
+                api_key="fake-key",
+                system_prompt="test",
+                user_message="hello",
+                images=None,
+                timeout=30,
+                max_output_tokens=256,
+                allow_truncated_text=True,
+                base_url="",
+            )
+        assert '"decision":"BUY"' in out
+
+    def test_gemini_truncation_still_raises_by_default(self):
+        from integrations.llm_client import _call_gemini
+
+        response = SimpleNamespace(
+            text='{"decision":"BUY"}',
+            candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")],
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=100,
+                candidates_token_count=20,
+                total_token_count=120,
+            ),
+        )
+        fake_modules = self._install_fake_google_genai(response)
+        with patch.dict(sys.modules, fake_modules, clear=False), patch("integrations.llm_client.time.sleep", return_value=None):
+            with pytest.raises(RuntimeError, match="Gemini 调用失败"):
+                _call_gemini(
+                    model="gemini-pro-latest",
+                    api_key="fake-key",
+                    system_prompt="test",
+                    user_message="hello",
+                    images=None,
+                    timeout=30,
+                    max_output_tokens=256,
+                    allow_truncated_text=False,
+                    base_url="",
                 )

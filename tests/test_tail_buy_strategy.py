@@ -15,6 +15,7 @@ from core.tail_buy_strategy import (
     evaluate_rule_decision,
     merge_rule_and_llm,
     pick_tail_candidates,
+    select_llm_overlay_candidates,
 )
 
 
@@ -195,6 +196,60 @@ def test_compute_tail_features_handles_volume_lot_unit_for_vwap():
     assert feats["vwap_volume_scale"] == 100.0
     assert 8.0 < feats["vwap"] < 20.0
     assert feats["dist_vwap_pct"] > -20.0
+
+
+def test_select_llm_overlay_candidates_prefilters_skip_and_low_score():
+    items = [
+        TailBuyCandidate(
+            code="301090",
+            name="华润材料",
+            signal_date="2026-04-20",
+            status="confirmed",
+            signal_type="spring",
+            signal_score=6.0,
+            rule_score=82.0,
+            rule_decision=DECISION_BUY,
+        ),
+        TailBuyCandidate(
+            code="002217",
+            name="合力泰",
+            signal_date="2026-04-20",
+            status="pending",
+            signal_type="sos",
+            signal_score=4.0,
+            rule_score=61.0,
+            rule_decision=DECISION_WATCH,
+        ),
+        TailBuyCandidate(
+            code="600000",
+            name="浦发银行",
+            signal_date="2026-04-20",
+            status="pending",
+            signal_type="sos",
+            signal_score=2.0,
+            rule_score=58.0,
+            rule_decision=DECISION_WATCH,
+        ),
+        TailBuyCandidate(
+            code="000001",
+            name="平安银行",
+            signal_date="2026-04-20",
+            status="pending",
+            signal_type="sos",
+            signal_score=1.0,
+            rule_score=75.0,
+            rule_decision=DECISION_SKIP,
+        ),
+    ]
+
+    selected = select_llm_overlay_candidates(
+        items,
+        max_llm_symbols=10,
+        min_rule_score=60.0,
+        allowed_rule_decisions=(DECISION_BUY, DECISION_WATCH),
+    )
+
+    assert [x.code for x in selected] == ["301090", "002217"]
 
 
 def test_build_tail_buy_markdown_can_append_extra_sections():

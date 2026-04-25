@@ -396,14 +396,13 @@ signal_pending (pending/confirmed)
 
 ## Pipeline（定时任务）
 
-### GitHub Actions 工作流（11 个）
+### GitHub Actions 工作流（10 个）
 
 | 工作流 | 时间（北京） | 说明 |
 |-------|-------------|------|
 | **CI** | push/PR | pytest + compile + dry-run |
 | **漏斗筛选 + AI 研报 + 决策** | 周日-周四 18:25 | `daily_job.py` Step2→3→4 |
-| **尾盘策略** | 周一-周五 14:00 | `tail_buy_intraday_job.py` |
-| **盘中持仓监控** | 周一-周五 10:00/11:00/13:30/14:30 | 止损/跳空/滞涨/VWAP 四维预警 |
+| **尾盘策略** | 周一-周五 13:50 | `tail_buy_intraday_job.py` |
 | **盘前风控** | 周一-周五 08:20 | A50 + VIX 预警 |
 | **涨停复盘** | 周一-周五 19:25 | 当日涨幅 ≥ 8% 回溯 |
 | **推荐跟踪重定价** | 周日-周四 23:00 | 同步收盘价、计算收益 |

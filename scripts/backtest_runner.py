@@ -130,20 +130,43 @@ def _parse_hold_days_list(raw: str) -> list[int]:
     return dedup
 
 
+def _normalize_backtest_board(board: str) -> str:
+    b = str(board or "").strip().lower()
+    # 回测统一口径：all 兼容映射到主板+创业板
+    if b in {"", "all"}:
+        return "main_chinext"
+    return b
+
+
+def _is_main_code(code: str) -> bool:
+    return str(code or "").startswith(
+        ("600", "601", "603", "605", "000", "001", "002", "003")
+    )
+
+
+def _is_chinext_code(code: str) -> bool:
+    return str(code or "").startswith(("300", "301"))
+
+
+def _board_match(code: str, board: str) -> bool:
+    b = _normalize_backtest_board(board)
+    c = str(code or "").strip()
+    if b == "main":
+        return _is_main_code(c)
+    if b == "chinext":
+        return _is_chinext_code(c)
+    # main_chinext（默认）以及未知值的兜底
+    return _is_main_code(c) or _is_chinext_code(c)
+
+
 def _build_universe(board: str, sample_size: int) -> tuple[list[str], dict[str, str]]:
-    if board == "main":
+    board_norm = _normalize_backtest_board(board)
+    if board_norm == "main":
         items = get_stocks_by_board("main")
-    elif board == "chinext":
+    elif board_norm == "chinext":
         items = get_stocks_by_board("chinext")
     else:
-        merged: dict[str, str] = {}
-        for item in get_stocks_by_board("main") + get_stocks_by_board("chinext"):
-            code = str(item.get("code", "")).strip()
-            if not code:
-                continue
-            if code not in merged:
-                merged[code] = str(item.get("name", "")).strip()
-        items = [{"code": c, "name": n} for c, n in merged.items()]
+        items = get_stocks_by_board("main_chinext")
 
     name_map = {
         str(x.get("code", "")).strip(): str(x.get("name", "")).strip()
@@ -154,7 +177,7 @@ def _build_universe(board: str, sample_size: int) -> tuple[list[str], dict[str, 
     symbols = [
         s
         for s in _normalize_symbols(list(name_map.keys()))
-        if "ST" not in name_map.get(s, "").upper()
+        if _board_match(s, board_norm) and "ST" not in name_map.get(s, "").upper()
     ]
     symbols = sorted(set(symbols))
     if sample_size > 0:
@@ -609,7 +632,11 @@ def run_backtest(
         name_map = snapshot_name_map
         all_codes = sorted(name_map.keys())
         # ST 过滤 + 采样，与 _build_universe 保持同口径
-        symbols = [s for s in _normalize_symbols(all_codes) if "ST" not in name_map.get(s, "").upper()]
+        symbols = [
+            s
+            for s in _normalize_symbols(all_codes)
+            if _board_match(s, board) and "ST" not in name_map.get(s, "").upper()
+        ]
         if sample_size > 0:
             symbols = symbols[:sample_size]
         print(f"[backtest] 股票池={len(symbols)} (快照 name_map, board={board}, sample_size={sample_size})")
@@ -1733,7 +1760,11 @@ def main() -> int:
         default=0,
         help="每日候选上限；0 表示不截断（回测全量 AI 输入，默认 0）",
     )
-    parser.add_argument("--board", choices=["all", "main", "chinext"], default="all")
+    parser.add_argument(
+        "--board",
+        choices=["main_chinext", "all", "main", "chinext"],
+        default="main_chinext",
+    )
     parser.add_argument(
         "--sample-size",
         type=int,

@@ -880,52 +880,6 @@ def _fetch_index_tushare(code: str, start: str, end: str) -> pd.DataFrame:
     return df[["date", "open", "high", "low", "close", "volume", "pct_chg"]].copy()
 
 
-def _normalize_index_tickflow_symbol(code: str) -> str:
-    """大盘指数代码转 TickFlow 格式：000001→000001.SH，399006→399006.SZ。"""
-    s = str(code).strip()
-    if "." in s:
-        return s
-    if s.startswith(("000", "880", "899")):
-        return f"{s}.SH"
-    return f"{s}.SZ"
-
-
-def _fetch_index_tickflow(code: str, start: str, end: str) -> pd.DataFrame:
-    """TickFlow 大盘指数日线 fallback。"""
-    from integrations.tickflow_client import TickFlowClient
-
-    api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("TICKFLOW_API_KEY 未配置")
-
-    try:
-        s = date(int(start[:4]), int(start[4:6]), int(start[6:]))
-        e = date(int(end[:4]), int(end[4:6]), int(end[6:]))
-        count = max(int((e - s).days * 1.5) + 5, 30)
-    except Exception:
-        count = 300
-
-    client = TickFlowClient(api_key=api_key)
-    sym = _normalize_index_tickflow_symbol(code)
-    df = client.get_klines(sym, period="1d", count=count)
-    if df.empty:
-        raise RuntimeError("tickflow index empty")
-
-    start_d = f"{start[:4]}-{start[4:6]}-{start[6:]}"
-    end_d = f"{end[:4]}-{end[4:6]}-{end[6:]}"
-    df = df[df["date"].between(start_d, end_d)].reset_index(drop=True)
-    if df.empty:
-        raise RuntimeError("tickflow index date range empty")
-
-    out = df[["date", "open", "high", "low", "close", "volume"]].copy()
-    out = out.rename(columns={"date": "date"})
-    for c in ["open", "high", "low", "close", "volume"]:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
-    # TickFlow 日线不直接返回涨跌幅
-    out["pct_chg"] = pd.NA
-    return out
-
-
 def _fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
     """akshare 大盘指数日线 fallback（tushare 不可用时自动降级）。"""
     import akshare as ak
@@ -956,9 +910,54 @@ def _fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
     return df[["date", "open", "high", "low", "close", "volume", "pct_chg"]].copy()
 
 
+def _index_symbol_for_tickflow(code: str) -> str:
+    """大盘指数代码转 TickFlow 格式，修复 normalize_cn_symbol 对 000001 的误判。"""
+    s = str(code).strip()
+    if "." in s:
+        return s
+    # 000001（上证指数）→ 000001.SH，而 normalize_cn_symbol 会错误地返回 000001.SZ
+    if s == "000001":
+        return "000001.SH"
+    from integrations.tickflow_client import normalize_cn_symbol
+    return normalize_cn_symbol(s)
+
+
+def _fetch_index_tickflow(code: str, start: str, end: str) -> pd.DataFrame:
+    """tickflow 大盘指数日线 fallback。"""
+    from integrations.tickflow_client import TickFlowClient
+
+    api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("TICKFLOW_API_KEY 未配置")
+
+    try:
+        s = date(int(start[:4]), int(start[4:6]), int(start[6:]))
+        e = date(int(end[:4]), int(end[4:6]), int(end[6:]))
+        count = max(int((e - s).days * 1.5) + 5, 30)
+    except Exception:
+        count = 300
+
+    tick_symbol = _index_symbol_for_tickflow(code)
+    client = TickFlowClient(api_key=api_key)
+    df = client.get_klines(tick_symbol, period="1d", count=count)
+    if df.empty:
+        raise RuntimeError("tickflow 大盘指数返回空数据")
+
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    # TickFlow 日线不直接返回涨跌幅，用收盘价差分估算
+    df["pct_chg"] = df["close"].pct_change() * 100.0
+    start_d = f"{start[:4]}-{start[4:6]}-{start[6:]}"
+    end_d = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    df = df[df["date"].between(start_d, end_d)]
+    return df[["date", "open", "high", "low", "close", "volume", "pct_chg"]].reset_index(drop=True)
+
+
 def fetch_index_hist(code: str, start: str | date, end: str | date) -> pd.DataFrame:
     """
-    大盘指数日线：tushare 优先，失败时 fallback 到 tickflow → akshare。
+    大盘指数日线：tushare 优先，失败时 fallback 到 tickflow/akshare。
     返回列：date, open, high, low, close, volume, pct_chg（小写，供 step2 使用）
     """
     start_s = (
@@ -977,10 +976,14 @@ def fetch_index_hist(code: str, start: str | date, end: str | date) -> pd.DataFr
         _debug_source_fail("tushare(index)", e)
 
     # 2) tickflow fallback
-    try:
-        return _fetch_index_tickflow(code, start_s, end_s)
-    except Exception as e:
-        _debug_source_fail("tickflow(index)", e)
+    tick_disabled = os.getenv("DATA_SOURCE_DISABLE_TICKFLOW", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if not tick_disabled:
+        try:
+            return _fetch_index_tickflow(code, start_s, end_s)
+        except Exception as e:
+            _debug_source_fail("tickflow(index)", e)
 
     # 3) akshare fallback
     try:
@@ -1165,8 +1168,9 @@ def fetch_market_cap_map(df_map: dict[str, pd.DataFrame] | None = None) -> dict[
     try:
         import akshare as ak
         df = ak.stock_zh_a_spot_em()
-        if df is not None and not df.empty:
-            # 找市值相关列
+        if df is not None and df.empty:
+            raise RuntimeError("akshare spot empty")
+        if df is not None:
             cap_col = None
             for c in df.columns:
                 cs = str(c)
@@ -1186,11 +1190,9 @@ def fetch_market_cap_map(df_map: dict[str, pd.DataFrame] | None = None) -> dict[
                     if code and pd.notna(cap_raw):
                         try:
                             cap_val = float(cap_raw)
-                            # 如果数值很大（>1e9），说明单位是元，转亿元
                             if cap_val > 1e9:
                                 cap_val = cap_val / 1e8
                             elif cap_val > 1e4:
-                                # 可能是万元，转亿元
                                 cap_val = cap_val / 1e4
                             mapping[code] = cap_val
                         except (ValueError, TypeError):
@@ -1229,7 +1231,6 @@ def _estimate_market_cap_from_ohlcv(df_map: dict[str, pd.DataFrame]) -> dict[str
             continue
         try:
             df_sorted = df.sort_values("日期" if "日期" in df.columns else df.columns[0])
-            # 获取最新收盘价
             close_col = "收盘" if "收盘" in df_sorted.columns else None
             if close_col is None:
                 continue
@@ -1237,32 +1238,24 @@ def _estimate_market_cap_from_ohlcv(df_map: dict[str, pd.DataFrame]) -> dict[str
             if pd.isna(latest_close) or latest_close <= 0:
                 continue
 
-            # 尝试用成交额/收盘价估算流通股本
             amount_col = "成交额" if "成交额" in df_sorted.columns else None
             vol_col = "成交量" if "成交量" in df_sorted.columns else None
 
             if amount_col and vol_col:
-                # 用最近5天的均值估算
                 recent = df_sorted.tail(5)
                 avg_amount = pd.to_numeric(recent[amount_col], errors="coerce").mean()
                 avg_vol = pd.to_numeric(recent[vol_col], errors="coerce").mean()
                 if pd.notna(avg_amount) and pd.notna(avg_vol) and avg_amount > 0 and avg_vol > 0:
-                    # 流通股本 ≈ 平均成交额 / 平均收盘价
-                    # 总市值 ≈ 总股数 × 最新价
-                    # 简化：用成交额/最新价 × 经验系数（通常流通股本 ≈ 总股本的 0.6-0.8）
-                    circ_shares = avg_amount / latest_close  # 流通股数（股）
-                    # 假设流通占比约 0.7，估算总股本
+                    circ_shares = avg_amount / latest_close
                     total_shares = circ_shares / 0.7
-                    market_cap_yi = total_shares * latest_close / 1e8  # 元 -> 亿元
+                    market_cap_yi = total_shares * latest_close / 1e8
                     mapping[sym] = market_cap_yi
                     continue
 
-            # fallback: 用成交量 × 经验倍数估算
             if vol_col:
                 recent = df_sorted.tail(5)
                 avg_vol = pd.to_numeric(recent[vol_col], errors="coerce").mean()
                 if pd.notna(avg_vol) and avg_vol > 0:
-                    # 经验公式：总市值 ≈ 日均成交量 × 最新价 × 300（约一年的换手）
                     market_cap_yi = avg_vol * latest_close * 300 / 1e8
                     mapping[sym] = market_cap_yi
         except Exception:

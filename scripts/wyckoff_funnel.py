@@ -302,17 +302,12 @@ def run_funnel_job(
     except Exception as e:
         print(f"[funnel] 行业映射加载失败，降级为空映射: {e}")
         sector_map = {}
-    print(f"[funnel] 加载市值数据...")
+    print(f"[funnel] 加载市值数据（初次）...")
+    market_cap_map: dict[str, float] = {}
     try:
         market_cap_map = fetch_market_cap_map()
     except Exception as e:
-        print(f"[funnel] 市值数据加载失败，降级为空映射: {e}")
-        market_cap_map = {}
-    if not market_cap_map:
-        print(
-            "[funnel] ⚠️ 市值数据为空（TUSHARE_TOKEN 可能缺失/失效），"
-            "将在 OHLCV 拉取后从 K 线数据估算市值"
-        )
+        print(f"[funnel] 市值数据加载失败，稍后从 K 线估算: {e}")
     print(f"[funnel] 加载股票名称...")
     try:
         name_map = _stock_name_map()
@@ -344,25 +339,6 @@ def run_funnel_job(
         batch_sleep=BATCH_SLEEP,
         executor_mode=EXECUTOR_MODE,
     )
-
-    # 如果市值数据为空，从已拉取的 K 线数据估算市值（tushare token 失效时）
-    if not market_cap_map:
-        from integrations.data_source import _estimate_market_cap_from_ohlcv
-        market_cap_map = _estimate_market_cap_from_ohlcv(all_df_map)
-        if market_cap_map:
-            cap_count = len(market_cap_map)
-            sample = list(market_cap_map.items())[:3]
-            print(
-                f"[funnel] 从 K 线数据估算市值: 共 {cap_count} 只股票"
-                f"（示例: {', '.join(f'{s}={v:.1f}亿' for s, v in sample)}）"
-            )
-        else:
-            print(
-                "[funnel] ⚠️ 市值数据为空（TUSHARE_TOKEN 可能缺失/失效），Layer1 将跳过市值过滤"
-            )
-    else:
-        print(f"[funnel] 市值数据加载成功: {len(market_cap_map)} 只股票")
-
     snapshot_dir = _dump_full_fetch_snapshot(
         df_map=all_df_map,
         all_symbols=all_symbols,
@@ -371,6 +347,18 @@ def run_funnel_job(
         bench_df=bench_df,
         smallcap_df=smallcap_df,
     )
+
+    # 二次尝试市值：K 线数据已就绪，若首次未获取到则用 OHLCV 估算
+    if not market_cap_map:
+        try:
+            from integrations.data_source import fetch_market_cap_map as _fmc
+            market_cap_map = _fmc(df_map=all_df_map)
+            if market_cap_map:
+                print(f"[funnel] ✓ 市值数据从 K 线估算成功（{len(market_cap_map)} 只）")
+        except Exception as e:
+            print(f"[funnel] 市值 K 线估算失败: {e}")
+    if not market_cap_map:
+        print("[funnel] ⚠️ 市值数据仍为空，Layer1 将跳过市值过滤")
 
     # Step 0: 大盘总闸 + 全市场广度 + 动态阈值
     breadth_context = _calc_market_breadth(all_df_map, BREADTH_MA_WINDOW)

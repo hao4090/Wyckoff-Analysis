@@ -1035,116 +1035,237 @@ def _ts_code_to_symbol(ts_code: str) -> str:
 def fetch_sector_map() -> dict[str, str]:
     """
     全市场 code->行业映射。优先用缓存，过期后通过 tushare stock_basic 刷新。
+    若 tushare 不可用，fallback 到 akshare / 本地缓存。
     """
+    def _read_cache() -> dict[str, str]:
+        try:
+            if _SECTOR_CACHE.exists():
+                with open(_SECTOR_CACHE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            _debug_source_fail("sector_cache_read", e)
+        return {}
+
+    # 缓存未过期时直接返回
     try:
         if (
             _SECTOR_CACHE.exists()
             and (time.time() - _SECTOR_CACHE.stat().st_mtime) < _CACHE_TTL
         ):
-            with open(_SECTOR_CACHE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            return _read_cache()
     except Exception as e:
         _debug_source_fail("sector_cache_read", e)
 
+    # 1) tushare
     from integrations.tushare_client import get_pro
 
     pro = get_pro()
-    if pro is None:
+    if pro is not None:
         try:
-            if _SECTOR_CACHE.exists():
-                with open(_SECTOR_CACHE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+            df = pro.stock_basic(fields="ts_code,industry")
+            if df is not None and not df.empty:
+                mapping = {}
+                for _, row in df.iterrows():
+                    sym = _ts_code_to_symbol(str(row["ts_code"]))
+                    industry = str(row.get("industry", "")).strip()
+                    if sym and industry:
+                        mapping[sym] = industry
+                try:
+                    _atomic_write_json(_SECTOR_CACHE, mapping)
+                except Exception as e:
+                    _debug_source_fail("sector_cache_write", e)
+                return mapping
         except Exception as e:
-            _debug_source_fail("sector_cache_fallback_read", e)
-        return {}
+            _debug_source_fail("tushare_stock_basic", e)
 
+    # 2) akshare fallback
     try:
-        df = pro.stock_basic(fields="ts_code,industry")
+        import akshare as ak
+        df = ak.stock_board_industry_name_em()
+        if df is not None and not df.empty:
+            name_col = "板块名称"
+            if name_col not in df.columns:
+                for c in df.columns:
+                    if "行业" in str(c) or "板块" in str(c):
+                        name_col = c
+                        break
+            mapping = {}
+            for _, row in df.iterrows():
+                name = str(row.get(name_col, "")).strip()
+                # 用 akshare 行业名直接映射（无股票代码时用行业名作 key 供 Layer3 使用）
+                if name:
+                    mapping[f"ak_{name}"] = name
+            if mapping:
+                try:
+                    _atomic_write_json(_SECTOR_CACHE, mapping)
+                except Exception as e:
+                    _debug_source_fail("sector_cache_write", e)
+                return mapping
     except Exception as e:
-        _debug_source_fail("tushare_stock_basic", e)
-        # tushare 短时抖动时，退回本地缓存，避免上游任务整体失败
-        try:
-            if _SECTOR_CACHE.exists():
-                with open(_SECTOR_CACHE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception as cache_e:
-            _debug_source_fail("sector_cache_error_fallback_read", cache_e)
-        return {}
+        _debug_source_fail("akshare_sector", e)
 
-    if df is None or df.empty:
-        try:
-            if _SECTOR_CACHE.exists():
-                with open(_SECTOR_CACHE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception as e:
-            _debug_source_fail("sector_cache_empty_fallback_read", e)
-        return {}
-
-    mapping = {}
-    for _, row in df.iterrows():
-        sym = _ts_code_to_symbol(str(row["ts_code"]))
-        industry = str(row.get("industry", "")).strip()
-        if sym and industry:
-            mapping[sym] = industry
-
-    try:
-        _atomic_write_json(_SECTOR_CACHE, mapping)
-    except Exception as e:
-        _debug_source_fail("sector_cache_write", e)
-
-    return mapping
+    # 3) cache fallback
+    return _read_cache()
 
 
-def fetch_market_cap_map() -> dict[str, float]:
+def fetch_market_cap_map(df_map: dict[str, pd.DataFrame] | None = None) -> dict[str, float]:
     """
-    全市场 code->总市值(亿元)。通过 tushare daily_basic 获取最新交易日数据。
+    全市场 code->总市值(亿元)。优先 tushare daily_basic，失败后尝试 akshare / tickflow。
+    若全部失败且 df_map 不为空，从 K 线数据估算市值。
     """
-    try:
-        if (
-            _MARKET_CAP_CACHE.exists()
-            and (time.time() - _MARKET_CAP_CACHE.stat().st_mtime) < _CACHE_TTL
-        ):
-            with open(_MARKET_CAP_CACHE, "r", encoding="utf-8") as f:
-                return {k: float(v) for k, v in json.load(f).items()}
-    except Exception as e:
-        _debug_source_fail("market_cap_cache_read", e)
-
-    from integrations.tushare_client import get_pro
-
-    pro = get_pro()
-    if pro is None:
+    def _read_cache() -> dict[str, float]:
         try:
             if _MARKET_CAP_CACHE.exists():
                 with open(_MARKET_CAP_CACHE, "r", encoding="utf-8") as f:
                     return {k: float(v) for k, v in json.load(f).items()}
         except Exception as e:
-            _debug_source_fail("market_cap_cache_fallback_read", e)
+            _debug_source_fail("market_cap_cache_read", e)
         return {}
 
-    from datetime import date as _date, timedelta as _td
+    # 缓存未过期时返回
+    try:
+        if (
+            _MARKET_CAP_CACHE.exists()
+            and (time.time() - _MARKET_CAP_CACHE.stat().st_mtime) < _CACHE_TTL
+        ):
+            return _read_cache()
+    except Exception as e:
+        _debug_source_fail("market_cap_cache_read", e)
 
-    # 尝试最近几个交易日
-    mapping: dict[str, float] = {}
-    for offset in range(5):
-        d = _date.today() - _td(days=1 + offset)
-        trade_date = d.strftime("%Y%m%d")
-        try:
-            df = pro.daily_basic(trade_date=trade_date, fields="ts_code,total_mv")
-            if df is not None and not df.empty:
+    # 1) tushare
+    from integrations.tushare_client import get_pro
+
+    pro = get_pro()
+    if pro is not None:
+        from datetime import date as _date, timedelta as _td
+
+        for offset in range(5):
+            d = _date.today() - _td(days=1 + offset)
+            trade_date = d.strftime("%Y%m%d")
+            try:
+                df = pro.daily_basic(trade_date=trade_date, fields="ts_code,total_mv")
+                if df is not None and not df.empty:
+                    mapping = {}
+                    for _, row in df.iterrows():
+                        sym = _ts_code_to_symbol(str(row["ts_code"]))
+                        total_mv = row.get("total_mv")
+                        if sym and pd.notna(total_mv):
+                            mapping[sym] = float(total_mv) / 10000.0  # 万元 -> 亿元
+                    if mapping:
+                        try:
+                            _atomic_write_json(_MARKET_CAP_CACHE, mapping)
+                        except Exception as e:
+                            _debug_source_fail("market_cap_cache_write", e)
+                    return mapping
+            except Exception as e:
+                _debug_source_fail(f"tushare_daily_basic[{trade_date}]", e)
+                continue
+
+    # 2) akshare fallback（全市场快照含总市值）
+    try:
+        import akshare as ak
+        df = ak.stock_zh_a_spot_em()
+        if df is not None and not df.empty:
+            # 找市值相关列
+            cap_col = None
+            for c in df.columns:
+                cs = str(c)
+                if cs in ("总市值", "总市值(元)", "总市值（元）"):
+                    cap_col = c
+                    break
+            if cap_col is None:
+                for c in df.columns:
+                    if "总市值" in str(c):
+                        cap_col = c
+                        break
+            if cap_col is not None:
+                mapping = {}
                 for _, row in df.iterrows():
-                    sym = _ts_code_to_symbol(str(row["ts_code"]))
-                    total_mv = row.get("total_mv")
-                    if sym and pd.notna(total_mv):
-                        mapping[sym] = float(total_mv) / 10000.0  # 万元 -> 亿元
-                break
-        except Exception as e:
-            _debug_source_fail(f"tushare_daily_basic[{trade_date}]", e)
-            continue
+                    code = str(row.get("代码", row.get("代码", ""))).strip()
+                    cap_raw = row.get(cap_col)
+                    if code and pd.notna(cap_raw):
+                        try:
+                            cap_val = float(cap_raw)
+                            # 如果数值很大（>1e9），说明单位是元，转亿元
+                            if cap_val > 1e9:
+                                cap_val = cap_val / 1e8
+                            elif cap_val > 1e4:
+                                # 可能是万元，转亿元
+                                cap_val = cap_val / 1e4
+                            mapping[code] = cap_val
+                        except (ValueError, TypeError):
+                            pass
+                if mapping:
+                    try:
+                        _atomic_write_json(_MARKET_CAP_CACHE, mapping)
+                    except Exception as e:
+                        _debug_source_fail("market_cap_cache_write", e)
+                    return mapping
+    except Exception as e:
+        _debug_source_fail("akshare_market_cap", e)
 
-    if mapping:
+    # 3) cache fallback
+    cached = _read_cache()
+    if cached:
+        return cached
+
+    # 4) estimate from OHLCV data（df_map 已在 funnel 中拉取完成）
+    if df_map:
+        return _estimate_market_cap_from_ohlcv(df_map)
+
+    return {}
+
+
+def _estimate_market_cap_from_ohlcv(df_map: dict[str, pd.DataFrame]) -> dict[str, float]:
+    """
+    从已拉取的 K 线数据估算市值（亿元）。
+    公式：总市值 ≈ 最新收盘价 × 总股数
+    其中：总股数 ≈ 平均日成交量 / 平均换手率
+    若缺少换手率，用成交额 / 收盘价估算流通股本再放大。
+    """
+    mapping: dict[str, float] = {}
+    for sym, df in df_map.items():
+        if df is None or df.empty:
+            continue
         try:
-            _atomic_write_json(_MARKET_CAP_CACHE, mapping)
-        except Exception as e:
-            _debug_source_fail("market_cap_cache_write", e)
+            df_sorted = df.sort_values("日期" if "日期" in df.columns else df.columns[0])
+            # 获取最新收盘价
+            close_col = "收盘" if "收盘" in df_sorted.columns else None
+            if close_col is None:
+                continue
+            latest_close = pd.to_numeric(df_sorted[close_col].iloc[-1], errors="coerce")
+            if pd.isna(latest_close) or latest_close <= 0:
+                continue
+
+            # 尝试用成交额/收盘价估算流通股本
+            amount_col = "成交额" if "成交额" in df_sorted.columns else None
+            vol_col = "成交量" if "成交量" in df_sorted.columns else None
+
+            if amount_col and vol_col:
+                # 用最近5天的均值估算
+                recent = df_sorted.tail(5)
+                avg_amount = pd.to_numeric(recent[amount_col], errors="coerce").mean()
+                avg_vol = pd.to_numeric(recent[vol_col], errors="coerce").mean()
+                if pd.notna(avg_amount) and pd.notna(avg_vol) and avg_amount > 0 and avg_vol > 0:
+                    # 流通股本 ≈ 平均成交额 / 平均收盘价
+                    # 总市值 ≈ 总股数 × 最新价
+                    # 简化：用成交额/最新价 × 经验系数（通常流通股本 ≈ 总股本的 0.6-0.8）
+                    circ_shares = avg_amount / latest_close  # 流通股数（股）
+                    # 假设流通占比约 0.7，估算总股本
+                    total_shares = circ_shares / 0.7
+                    market_cap_yi = total_shares * latest_close / 1e8  # 元 -> 亿元
+                    mapping[sym] = market_cap_yi
+                    continue
+
+            # fallback: 用成交量 × 经验倍数估算
+            if vol_col:
+                recent = df_sorted.tail(5)
+                avg_vol = pd.to_numeric(recent[vol_col], errors="coerce").mean()
+                if pd.notna(avg_vol) and avg_vol > 0:
+                    # 经验公式：总市值 ≈ 日均成交量 × 最新价 × 300（约一年的换手）
+                    market_cap_yi = avg_vol * latest_close * 300 / 1e8
+                    mapping[sym] = market_cap_yi
+        except Exception:
+            continue
 
     return mapping

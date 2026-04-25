@@ -310,7 +310,8 @@ def run_funnel_job(
         market_cap_map = {}
     if not market_cap_map:
         print(
-            "[funnel] ⚠️ 市值数据为空（TUSHARE_TOKEN 可能缺失/失效），Layer1 将跳过市值过滤"
+            "[funnel] ⚠️ 市值数据为空（TUSHARE_TOKEN 可能缺失/失效），"
+            "将在 OHLCV 拉取后从 K 线数据估算市值"
         )
     print(f"[funnel] 加载股票名称...")
     try:
@@ -343,6 +344,25 @@ def run_funnel_job(
         batch_sleep=BATCH_SLEEP,
         executor_mode=EXECUTOR_MODE,
     )
+
+    # 如果市值数据为空，从已拉取的 K 线数据估算市值（tushare token 失效时）
+    if not market_cap_map:
+        from integrations.data_source import _estimate_market_cap_from_ohlcv
+        market_cap_map = _estimate_market_cap_from_ohlcv(all_df_map)
+        if market_cap_map:
+            cap_count = len(market_cap_map)
+            sample = list(market_cap_map.items())[:3]
+            print(
+                f"[funnel] 从 K 线数据估算市值: 共 {cap_count} 只股票"
+                f"（示例: {', '.join(f'{s}={v:.1f}亿' for s, v in sample)}）"
+            )
+        else:
+            print(
+                "[funnel] ⚠️ 市值数据为空（TUSHARE_TOKEN 可能缺失/失效），Layer1 将跳过市值过滤"
+            )
+    else:
+        print(f"[funnel] 市值数据加载成功: {len(market_cap_map)} 只股票")
+
     snapshot_dir = _dump_full_fetch_snapshot(
         df_map=all_df_map,
         all_symbols=all_symbols,

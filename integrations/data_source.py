@@ -4,7 +4,7 @@
 # 商业授权请联系作者支付授权费用。
 
 """
-统一数据源：个股日线 tushare 优先（qfq）→ akshare→baostock→tickflow→efinance；大盘 tushare 直连
+统一数据源：个股日线 tushare 优先（qfq）→ tickflow→akshare→baostock→efinance；大盘 tushare 直连
 
 输出格式与 akshare 兼容：日期, 开盘, 最高, 最低, 收盘, 成交量, 成交额, 涨跌幅, 换手率, 振幅
 """
@@ -690,7 +690,7 @@ def fetch_stock_hist(
     adjust: Literal["", "qfq", "hfq"] = "qfq",
 ) -> pd.DataFrame:
     """
-    个股日线：tushare 优先（固定 qfq），失败时回退 akshare/baostock/tickflow/efinance。
+    个股日线：tushare 优先（固定 qfq），失败时回退 tickflow/akshare/baostock/efinance。
     可用环境变量按需禁用数据源：
     - DATA_SOURCE_DISABLE_AKSHARE=1
     - DATA_SOURCE_DISABLE_BAOSTOCK=1
@@ -752,7 +752,21 @@ def fetch_stock_hist(
         "on",
     }
 
-    # 2. akshare
+    # 2. tickflow (qfq/hfq/不复权)
+    if disable_tickflow:
+        failed_sources.append("tickflow(disabled)")
+        failed_details.append("tickflow=disabled_by_env")
+    else:
+        try:
+            return _tag_source(
+                _fetch_stock_tickflow(symbol, start_s, end_s, adjust), "tickflow"
+            )
+        except Exception as e:
+            _debug_source_fail("tickflow", e)
+            failed_sources.append("tickflow")
+            failed_details.append(f"tickflow={_compact_error(e)}")
+
+    # 3. akshare
     if disable_akshare:
         failed_sources.append("akshare(disabled)")
         failed_details.append("akshare=disabled_by_env")
@@ -779,7 +793,7 @@ def fetch_stock_hist(
                 failed_details.append(f"akshare={_compact_error(e)}")
                 break
 
-    # 3. baostock (仅前复权)
+    # 4. baostock (仅前复权)
     baostock_circuit_open, baostock_circuit_note = _baostock_circuit_state()
     if disable_baostock:
         failed_sources.append("baostock(disabled)")
@@ -810,20 +824,6 @@ def fetch_stock_hist(
             failed_sources.append("baostock")
             failed_details.append(f"baostock={_compact_error(e)}")
 
-    # 4. tickflow (qfq/hfq/不复权)
-    if disable_tickflow:
-        failed_sources.append("tickflow(disabled)")
-        failed_details.append("tickflow=disabled_by_env")
-    else:
-        try:
-            return _tag_source(
-                _fetch_stock_tickflow(symbol, start_s, end_s, adjust), "tickflow"
-            )
-        except Exception as e:
-            _debug_source_fail("tickflow", e)
-            failed_sources.append("tickflow")
-            failed_details.append(f"tickflow={_compact_error(e)}")
-
     # 5. efinance (仅前复权)
     if disable_efinance:
         failed_sources.append("efinance(disabled)")
@@ -848,7 +848,7 @@ def fetch_stock_hist(
     hint = _network_hint_from_details(failed_details)
     hint_suffix = f" 诊断提示：{hint}" if hint else ""
     raise RuntimeError(
-        f"数据拉取全线失败 [标:{symbol}, 范围:{start_s}..{end_s}, 复权:{adjust}]：已按顺序尝试 tushare→akshare→baostock→tickflow→efinance，"
+        f"数据拉取全线失败 [标:{symbol}, 范围:{start_s}..{end_s}, 复权:{adjust}]：已按顺序尝试 tushare→tickflow→akshare→baostock→efinance，"
         f"均无可用 K 线数据。请检查该标的是否已退市或处于长期停牌期。{detail_suffix}{hint_suffix}"
     )
 

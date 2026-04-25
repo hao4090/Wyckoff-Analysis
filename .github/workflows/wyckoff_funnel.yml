@@ -23,6 +23,7 @@ jobs:
       # 指定使用 Qwen 作为默认 LLM 供应商
       DEFAULT_LLM_PROVIDER: qwen
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
       MY_PORTFOLIO_STATE: ${{ secrets.MY_PORTFOLIO_STATE }}
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
@@ -32,6 +33,10 @@ jobs:
       SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+      # 数据源配置：tushare token 可能失效时，禁用 akshare/baostock（网络差/超时），走 tickflow
+      DATA_SOURCE_DISABLE_AKSHARE: "1"
+      DATA_SOURCE_DISABLE_BAOSTOCK: "1"
+      DATA_SOURCE_DEBUG: "1"
       # 实盘风控参数：锁死 -9% 止损 + 单票仓位上限
       STEP4_BUY_HARD_STOP_ENABLED: "1"
       STEP4_BUY_HARD_STOP_PCT: "9.0"

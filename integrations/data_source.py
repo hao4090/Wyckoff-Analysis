@@ -4,7 +4,7 @@
 # 商业授权请联系作者支付授权费用。
 
 """
-统一数据源：个股日线 tushare 优先（qfq）→ baostock→akshare→efinance；大盘 tushare 直连
+统一数据源：个股日线 tushare 优先（qfq）→ akshare→baostock→tickflow→efinance；大盘 tushare 直连
 
 输出格式与 akshare 兼容：日期, 开盘, 最高, 最低, 收盘, 成交量, 成交额, 涨跌幅, 换手率, 振幅
 """
@@ -462,6 +462,62 @@ def _ensure_baostock_login():
         return bs
 
 
+def _fetch_stock_tickflow(symbol: str, start: str, end: str, adjust: str) -> pd.DataFrame:
+    """
+    TickFlow 个股日线 K 线数据（基于 integrations/tickflow_client.py）。
+
+    参数:
+        symbol: 6 位代码，如 "600519"
+        start/end: YYYYMMDD 格式（此处按 count 方式估算天数）
+        adjust: "" (不复权), "qfq" (前复权), "hfq" (后复权)
+
+    返回列: 日期, 开盘, 最高, 最低, 收盘, 成交量, 成交额, 涨跌幅, 换手率, 振幅
+    """
+    from integrations.tickflow_client import TickFlowClient
+
+    api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("TICKFLOW_API_KEY 未配置")
+
+    # 根据 start/end 计算需要的 count 天数
+    try:
+        s = date(int(start[:4]), int(start[4:6]), int(start[6:]))
+        e = date(int(end[:4]), int(end[4:6]), int(end[6:]))
+        count = max(int((e - s).days * 1.5) + 5, 30)
+    except Exception:
+        count = 300
+
+    adjust_map = {"qfq": "forward", "hfq": "backward", "": "none"}
+    adj_val = adjust_map.get(adjust, "forward")
+
+    client = TickFlowClient(api_key=api_key)
+    df = client.get_klines(symbol, period="1d", count=count)
+    if df.empty:
+        raise RuntimeError("tickflow empty")
+
+    # 按 adjust 调用（TickFlow SDK 默认 forward，此处先统一用 forward）
+    df = df.copy()
+    df["日期"] = df["date"]
+    df["开盘"] = pd.to_numeric(df["open"], errors="coerce")
+    df["最高"] = pd.to_numeric(df["high"], errors="coerce")
+    df["最低"] = pd.to_numeric(df["low"], errors="coerce")
+    df["收盘"] = pd.to_numeric(df["close"], errors="coerce")
+    # volume: TickFlow 返回的是 手 → 股 (×100)
+    df["成交量"] = pd.to_numeric(df["volume"], errors="coerce") * 100.0
+    df["成交额"] = pd.to_numeric(df["amount"], errors="coerce")
+    df["涨跌幅"] = pd.NA  # TickFlow 日线不直接返回涨跌幅
+    df["换手率"] = pd.NA
+    df["振幅"] = pd.NA
+
+    start_d = f"{start[:4]}-{start[4:6]}-{start[6:]}"
+    end_d = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    out_cols = [
+        "日期", "开盘", "最高", "最低", "收盘",
+        "成交量", "成交额", "涨跌幅", "换手率", "振幅",
+    ]
+    return df[df["日期"].between(start_d, end_d)][out_cols].reset_index(drop=True)
+
+
 def _fetch_stock_efinance(symbol: str, start: str, end: str) -> pd.DataFrame:
     # Streamlit Cloud / 只读部署环境下，efinance 在 import 阶段会尝试写 site-packages/efinance/data。
     # 这里做一次兼容导入：临时忽略该 mkdir 的 PermissionError，随后把缓存目录重定向到 /tmp。
@@ -586,13 +642,6 @@ def _fetch_stock_tushare(
     df = ts.pro_bar(ts_code=ts_code, adj=adj_val, start_date=start, end_date=end)
     
     if df is None or df.empty:
-        # 诊断：尝试拉取不复权数据，看是否是权限问题（qfq 需要更高积分）
-        try:
-            df_no_adj = pro.daily(ts_code=ts_code, start_date=start, end_date=end)
-            if df_no_adj is not None and not df_no_adj.empty:
-                raise RuntimeError("tushare empty (qfq auth limit?)")
-        except Exception:
-            pass
         raise RuntimeError("tushare empty")
     
     df = df.rename(
@@ -641,10 +690,11 @@ def fetch_stock_hist(
     adjust: Literal["", "qfq", "hfq"] = "qfq",
 ) -> pd.DataFrame:
     """
-    个股日线：tushare 优先（固定 qfq），失败时回退 baostock/akshare/efinance。
+    个股日线：tushare 优先（固定 qfq），失败时回退 akshare/baostock/tickflow/efinance。
     可用环境变量按需禁用数据源：
     - DATA_SOURCE_DISABLE_AKSHARE=1
     - DATA_SOURCE_DISABLE_BAOSTOCK=1
+    - DATA_SOURCE_DISABLE_TICKFLOW=1
     - DATA_SOURCE_DISABLE_EFINANCE=1
     返回列：日期, 开盘, 最高, 最低, 收盘, 成交量, 成交额, 涨跌幅, 换手率, 振幅
     """
@@ -664,7 +714,6 @@ def fetch_stock_hist(
     pro = get_pro()
 
     # 1) tushare 优先（固定 qfq）
-    # 若 token 无效导致调用失败，自动 failover 到 baostock/akshare
     if pro is not None:
         try:
             return _tag_source(
@@ -674,8 +723,6 @@ def fetch_stock_hist(
             _debug_source_fail("tushare", e)
             failed_sources.append("tushare")
             failed_details.append(f"tushare={_compact_error(e)}")
-            # token 无效时重置 pro，强制后续调用直接走 fallback
-            pro = None
     else:
         failed_sources.append("tushare(unconfigured)")
         failed_details.append("tushare=token_missing")
@@ -692,6 +739,12 @@ def fetch_stock_hist(
         "yes",
         "on",
     }
+    disable_tickflow = os.getenv("DATA_SOURCE_DISABLE_TICKFLOW", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     disable_efinance = os.getenv("DATA_SOURCE_DISABLE_EFINANCE", "").strip().lower() in {
         "1",
         "true",
@@ -699,7 +752,34 @@ def fetch_stock_hist(
         "on",
     }
 
-    # 2. baostock (仅前复权) - tushare token 无效时优先 fallback 到 baostock
+    # 2. akshare
+    if disable_akshare:
+        failed_sources.append("akshare(disabled)")
+        failed_details.append("akshare=disabled_by_env")
+    else:
+        last_akshare_err: Exception | None = None
+        for attempt in range(1, _AKSHARE_RETRY_TIMES + 1):
+            try:
+                return _tag_source(
+                    _fetch_stock_akshare(symbol, start_s, end_s, adjust), "akshare"
+                )
+            except ModuleNotFoundError as e:
+                _debug_source_fail("akshare", e)
+                failed_sources.append(f"akshare(缺少依赖 {e.name})")
+                failed_details.append(f"akshare={_compact_error(e)}")
+                last_akshare_err = e
+                break
+            except Exception as e:
+                last_akshare_err = e
+                _debug_source_fail("akshare", e)
+                if attempt < _AKSHARE_RETRY_TIMES and _is_retryable_akshare_error(e):
+                    time.sleep(max(_AKSHARE_RETRY_SLEEP_SECONDS, 0.0))
+                    continue
+                failed_sources.append("akshare")
+                failed_details.append(f"akshare={_compact_error(e)}")
+                break
+
+    # 3. baostock (仅前复权)
     baostock_circuit_open, baostock_circuit_note = _baostock_circuit_state()
     if disable_baostock:
         failed_sources.append("baostock(disabled)")
@@ -730,35 +810,21 @@ def fetch_stock_hist(
             failed_sources.append("baostock")
             failed_details.append(f"baostock={_compact_error(e)}")
 
-
-    # 3. akshare - baostock 失败后 fallback 到 akshare
-    if disable_akshare:
-        failed_sources.append("akshare(disabled)")
-        failed_details.append("akshare=disabled_by_env")
+    # 4. tickflow (qfq/hfq/不复权)
+    if disable_tickflow:
+        failed_sources.append("tickflow(disabled)")
+        failed_details.append("tickflow=disabled_by_env")
     else:
-        last_akshare_err: Exception | None = None
-        for attempt in range(1, _AKSHARE_RETRY_TIMES + 1):
-            try:
-                return _tag_source(
-                    _fetch_stock_akshare(symbol, start_s, end_s, adjust), "akshare"
-                )
-            except ModuleNotFoundError as e:
-                _debug_source_fail("akshare", e)
-                failed_sources.append(f"akshare(缺少依赖 {e.name})")
-                failed_details.append(f"akshare={_compact_error(e)}")
-                last_akshare_err = e
-                break
-            except Exception as e:
-                last_akshare_err = e
-                _debug_source_fail("akshare", e)
-                if attempt < _AKSHARE_RETRY_TIMES and _is_retryable_akshare_error(e):
-                    time.sleep(max(_AKSHARE_RETRY_SLEEP_SECONDS, 0.0))
-                    continue
-                failed_sources.append("akshare")
-                failed_details.append(f"akshare={_compact_error(e)}")
-                break
+        try:
+            return _tag_source(
+                _fetch_stock_tickflow(symbol, start_s, end_s, adjust), "tickflow"
+            )
+        except Exception as e:
+            _debug_source_fail("tickflow", e)
+            failed_sources.append("tickflow")
+            failed_details.append(f"tickflow={_compact_error(e)}")
 
-    # 4. efinance (仅前复权)
+    # 5. efinance (仅前复权)
     if disable_efinance:
         failed_sources.append("efinance(disabled)")
         failed_details.append("efinance=disabled_by_env")
@@ -775,14 +841,14 @@ def fetch_stock_hist(
             failed_details.append(f"efinance={_compact_error(e)}")
 
     detail_suffix = (
-        f" 失败详情：{'；'.join(failed_details[:4])}。"
+        f" 失败详情：{'；'.join(failed_details[:5])}。"
         if failed_details
         else ""
     )
     hint = _network_hint_from_details(failed_details)
     hint_suffix = f" 诊断提示：{hint}" if hint else ""
     raise RuntimeError(
-        f"数据拉取全线失败 [标:{symbol}, 范围:{start_s}..{end_s}, 复权:{adjust}]：已按顺序尝试 tushare→baostock→akshare→efinance，"
+        f"数据拉取全线失败 [标:{symbol}, 范围:{start_s}..{end_s}, 复权:{adjust}]：已按顺序尝试 tushare→akshare→baostock→tickflow→efinance，"
         f"均无可用 K 线数据。请检查该标的是否已退市或处于长期停牌期。{detail_suffix}{hint_suffix}"
     )
 

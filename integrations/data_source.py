@@ -880,6 +880,52 @@ def _fetch_index_tushare(code: str, start: str, end: str) -> pd.DataFrame:
     return df[["date", "open", "high", "low", "close", "volume", "pct_chg"]].copy()
 
 
+def _normalize_index_tickflow_symbol(code: str) -> str:
+    """大盘指数代码转 TickFlow 格式：000001→000001.SH，399006→399006.SZ。"""
+    s = str(code).strip()
+    if "." in s:
+        return s
+    if s.startswith(("000", "880", "899")):
+        return f"{s}.SH"
+    return f"{s}.SZ"
+
+
+def _fetch_index_tickflow(code: str, start: str, end: str) -> pd.DataFrame:
+    """TickFlow 大盘指数日线 fallback。"""
+    from integrations.tickflow_client import TickFlowClient
+
+    api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("TICKFLOW_API_KEY 未配置")
+
+    try:
+        s = date(int(start[:4]), int(start[4:6]), int(start[6:]))
+        e = date(int(end[:4]), int(end[4:6]), int(end[6:]))
+        count = max(int((e - s).days * 1.5) + 5, 30)
+    except Exception:
+        count = 300
+
+    client = TickFlowClient(api_key=api_key)
+    sym = _normalize_index_tickflow_symbol(code)
+    df = client.get_klines(sym, period="1d", count=count)
+    if df.empty:
+        raise RuntimeError("tickflow index empty")
+
+    start_d = f"{start[:4]}-{start[4:6]}-{start[6:]}"
+    end_d = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    df = df[df["date"].between(start_d, end_d)].reset_index(drop=True)
+    if df.empty:
+        raise RuntimeError("tickflow index date range empty")
+
+    out = df[["date", "open", "high", "low", "close", "volume"]].copy()
+    out = out.rename(columns={"date": "date"})
+    for c in ["open", "high", "low", "close", "volume"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    # TickFlow 日线不直接返回涨跌幅
+    out["pct_chg"] = pd.NA
+    return out
+
+
 def _fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
     """akshare 大盘指数日线 fallback（tushare 不可用时自动降级）。"""
     import akshare as ak
@@ -912,7 +958,7 @@ def _fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
 
 def fetch_index_hist(code: str, start: str | date, end: str | date) -> pd.DataFrame:
     """
-    大盘指数日线：tushare 优先，失败时 fallback 到 akshare。
+    大盘指数日线：tushare 优先，失败时 fallback 到 tickflow → akshare。
     返回列：date, open, high, low, close, volume, pct_chg（小写，供 step2 使用）
     """
     start_s = (
@@ -930,14 +976,20 @@ def fetch_index_hist(code: str, start: str | date, end: str | date) -> pd.DataFr
     except Exception as e:
         _debug_source_fail("tushare(index)", e)
 
-    # 2) akshare fallback
+    # 2) tickflow fallback
+    try:
+        return _fetch_index_tickflow(code, start_s, end_s)
+    except Exception as e:
+        _debug_source_fail("tickflow(index)", e)
+
+    # 3) akshare fallback
     try:
         return _fetch_index_akshare(code, start_s, end_s)
     except Exception as e2:
         _debug_source_fail("akshare(index)", e2)
 
     raise RuntimeError(
-        f"大盘指数 {code} 拉取全部失败（tushare + akshare），请检查 TUSHARE_TOKEN 或网络连通性。"
+        f"大盘指数 {code} 拉取全部失败（tushare + tickflow + akshare），请检查 TUSHARE_TOKEN 或网络连通性。"
     )
 
 

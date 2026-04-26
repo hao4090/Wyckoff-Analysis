@@ -458,11 +458,17 @@ def correct_tracking_initial_prices() -> int:
 
 
 def load_recommendation_tracking(limit: int = 1000) -> list[dict[str, Any]]:
-    """加载推荐跟踪数据"""
+    """加载推荐跟踪数据。
+
+    优先使用 admin 客户端（绕过 RLS，只读操作），未配置时回退到 anon 客户端。
+    """
     try:
-        # 这里可以使用普通 client，也可以用 admin
-        from integrations.supabase_client import get_supabase_client
-        client = get_supabase_client()
+        if is_supabase_configured():
+            client = _get_supabase_admin_client()
+        else:
+            from integrations.supabase_client import get_supabase_client
+            client = get_supabase_client()
+
         resp = (
             client.table(TABLE_RECOMMENDATION_TRACKING)
             .select("*")

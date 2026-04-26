@@ -27,7 +27,7 @@ from integrations.supabase_base import create_admin_client
 # 注意: signal_pending / market_signal_daily / daily_nav 表可能尚未创建，
 # cleanup_table 中会优雅处理 PGRST205 / "not found" 等错误。
 CLEANUP_RULES: list[tuple[str, str, int]] = [
-    (TABLE_STOCK_HIST_CACHE, "date", 180),
+    (TABLE_STOCK_HIST_CACHE, "date", 320),
     (TABLE_TRADE_ORDERS, "trade_date", 15),
     (TABLE_RECOMMENDATION_TRACKING, "recommend_date", 40),
     (TABLE_SIGNAL_PENDING, "signal_date", 15),

@@ -25,9 +25,9 @@ from integrations.supabase_base import create_admin_client
 
 # (table, date_column, ttl_days)
 # 注意: signal_pending / market_signal_daily / daily_nav 表可能尚未创建，
-# cleanup_table 中会优雅处理 PGRST205 / "not found" / 无 id 列等错误。
+# cleanup_table 中会优雅处理 PGRST205 / "not found" 等错误。
 CLEANUP_RULES: list[tuple[str, str, int]] = [
-    (TABLE_STOCK_HIST_CACHE, "date", 90),
+    (TABLE_STOCK_HIST_CACHE, "date", 180),
     (TABLE_TRADE_ORDERS, "trade_date", 15),
     (TABLE_RECOMMENDATION_TRACKING, "recommend_date", 40),
     (TABLE_SIGNAL_PENDING, "signal_date", 15),
@@ -58,6 +58,68 @@ def _is_table_not_found_error(error: Exception) -> bool:
     return "PGRST205" in err_str or "not found" in err_str.lower()
 
 
+def _cleanup_stock_hist_cache_batched(
+    client, cutoff: str, *, batch_days: int = 10, max_batches: int = 50
+) -> tuple[str, int | None]:
+    """大表分批删除: 从 oldest data 开始，按 batch_days 逐步向 cutoff 推进。
+
+    每次只删除一个窄日期范围（如 10 天），避免 statement_timeout。
+    """
+    from datetime import date as date_type
+
+    if isinstance(cutoff, str):
+        cutoff_date = datetime.strptime(cutoff, "%Y-%m-%d").date()
+    else:
+        cutoff_date = cutoff
+
+    # 先找到最老数据的日期
+    resp = (
+        client.table(TABLE_STOCK_HIST_CACHE)
+        .select("date")
+        .order("date", desc=False)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return "ok", 0
+
+    oldest_str = str(resp.data[0].get("date", ""))
+    if not oldest_str:
+        return "ok", 0
+
+    oldest_date = datetime.strptime(oldest_str, "%Y-%m-%d").date()
+    current = oldest_date
+    deleted_batches = 0
+
+    while current < cutoff_date and deleted_batches < max_batches:
+        batch_end = current + timedelta(days=batch_days)
+        if batch_end > cutoff_date:
+            batch_end = cutoff_date
+
+        batch_start_str = current.isoformat()
+        batch_end_str = batch_end.isoformat()
+
+        # 检查是否有数据在这个范围内
+        has_data = (
+            client.table(TABLE_STOCK_HIST_CACHE)
+            .select("date")
+            .gte("date", batch_start_str)
+            .lt("date", batch_end_str)
+            .limit(1)
+            .execute()
+        )
+        if has_data.data:
+            # 删除这个日期范围内的所有数据
+            client.table(TABLE_STOCK_HIST_CACHE).delete().gte(
+                "date", batch_start_str
+            ).lt("date", batch_end_str).execute()
+
+        current = batch_end
+        deleted_batches += 1
+
+    return "ok", deleted_batches
+
+
 def cleanup_table(
     client, table: str, date_col: str, ttl_days: int, *, dry_run: bool = False
 ) -> tuple[str, int | None]:
@@ -78,7 +140,11 @@ def cleanup_table(
             )
             return "dry_run", resp.count or 0
 
-        # 直接 PostgREST DELETE（高效单请求）
+        # stock_hist_cache 是大表(百万级)，需要按 symbol 分批删除防止超时
+        if table == TABLE_STOCK_HIST_CACHE:
+            return _cleanup_stock_hist_cache_batched(client, cutoff)
+
+        # 其他小表: 直接 PostgREST DELETE（高效单请求）
         client.table(table).delete().lt(date_col, cutoff).execute()
         return "ok", None
     except Exception as e:

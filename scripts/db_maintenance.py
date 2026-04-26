@@ -24,6 +24,8 @@ from core.constants import (
 from integrations.supabase_base import create_admin_client
 
 # (table, date_column, ttl_days)
+# 注意: signal_pending / market_signal_daily / daily_nav 表可能尚未创建，
+# cleanup_table 中会优雅处理 PGRST205 (表不存在) 错误。
 CLEANUP_RULES: list[tuple[str, str, int]] = [
     (TABLE_STOCK_HIST_CACHE, "date", 320),
     (TABLE_TRADE_ORDERS, "trade_date", 15),
@@ -33,15 +35,38 @@ CLEANUP_RULES: list[tuple[str, str, int]] = [
     (TABLE_DAILY_NAV, "trade_date", 15),
 ]
 
+# 以下表的日期列类型为 bigint，需要将 cutoff 转为 Unix 时间戳(秒)
+BIGINT_DATE_COLUMNS = {
+    TABLE_RECOMMENDATION_TRACKING: "recommend_date",
+}
+
 
 def _cutoff_iso(ttl_days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=ttl_days)).date().isoformat()
 
 
+def _cutoff_unix_timestamp(ttl_days: int) -> int:
+    """将 cutoff 转为 Unix 时间戳(秒)，用于 bigint 类型的日期列。"""
+    return int(
+        (datetime.now(timezone.utc) - timedelta(days=ttl_days)).timestamp()
+    )
+
+
+def _is_table_not_found_error(error: Exception) -> bool:
+    """检查是否为 Supabase PGRST205 表不存在错误。"""
+    err_str = str(error)
+    return "PGRST205" in err_str or "not found" in err_str.lower()
+
+
 def cleanup_table(
     client, table: str, date_col: str, ttl_days: int, *, dry_run: bool = False
 ) -> tuple[str, int | None]:
-    cutoff = _cutoff_iso(ttl_days)
+    # bigint 列: 使用 Unix 时间戳
+    if table in BIGINT_DATE_COLUMNS and BIGINT_DATE_COLUMNS[table] == date_col:
+        cutoff = str(_cutoff_unix_timestamp(ttl_days))
+    else:
+        cutoff = _cutoff_iso(ttl_days)
+
     try:
         if dry_run:
             resp = (
@@ -52,9 +77,31 @@ def cleanup_table(
                 .execute()
             )
             return "dry_run", resp.count or 0
-        client.table(table).delete().lt(date_col, cutoff).execute()
-        return "ok", None
+
+        # 大表分批删除: 先尝试一次性删除, 超时时按 symbol 分批
+        max_batch = 500
+        deleted_total = 0
+        for _ in range(max_batch):
+            resp = (
+                client.table(table)
+                .select("id")
+                .lt(date_col, cutoff)
+                .limit(max_batch)
+                .execute()
+            )
+            rows = resp.data or []
+            if not rows:
+                break
+
+            ids = [r["id"] for r in rows]
+            client.table(table).delete().in_("id", ids).execute()
+            deleted_total += len(ids)
+
+        return "ok", deleted_total
     except Exception as e:
+        # 表尚未创建时视为非致命错误
+        if _is_table_not_found_error(e):
+            return "skipped: table not found", None
         return f"error: {e}", None
 
 

@@ -25,9 +25,9 @@ from integrations.supabase_base import create_admin_client
 
 # (table, date_column, ttl_days)
 # 注意: signal_pending / market_signal_daily / daily_nav 表可能尚未创建，
-# cleanup_table 中会优雅处理 PGRST205 (表不存在) 错误。
+# cleanup_table 中会优雅处理 PGRST205 / "not found" / 无 id 列等错误。
 CLEANUP_RULES: list[tuple[str, str, int]] = [
-    (TABLE_STOCK_HIST_CACHE, "date", 320),
+    (TABLE_STOCK_HIST_CACHE, "date", 90),
     (TABLE_TRADE_ORDERS, "trade_date", 15),
     (TABLE_RECOMMENDATION_TRACKING, "recommend_date", 40),
     (TABLE_SIGNAL_PENDING, "signal_date", 15),
@@ -78,26 +78,9 @@ def cleanup_table(
             )
             return "dry_run", resp.count or 0
 
-        # 大表分批删除: 先尝试一次性删除, 超时时按 symbol 分批
-        max_batch = 500
-        deleted_total = 0
-        for _ in range(max_batch):
-            resp = (
-                client.table(table)
-                .select("id")
-                .lt(date_col, cutoff)
-                .limit(max_batch)
-                .execute()
-            )
-            rows = resp.data or []
-            if not rows:
-                break
-
-            ids = [r["id"] for r in rows]
-            client.table(table).delete().in_("id", ids).execute()
-            deleted_total += len(ids)
-
-        return "ok", deleted_total
+        # 直接 PostgREST DELETE（高效单请求）
+        client.table(table).delete().lt(date_col, cutoff).execute()
+        return "ok", None
     except Exception as e:
         # 表尚未创建时视为非致命错误
         if _is_table_not_found_error(e):

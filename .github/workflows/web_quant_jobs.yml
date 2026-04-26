@@ -32,7 +32,6 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-      TUSHARE_API_URL: ${{ secrets.TUSHARE_API_URL }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

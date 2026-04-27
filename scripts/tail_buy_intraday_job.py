@@ -506,7 +506,7 @@ def main() -> int:
             logs_path=logs_path,
         )
         _log(f"无候选结束: feishu_ok={feishu_ok}, tg_ok={tg_ok}", logs_path)
-        return 0 if (push_enabled and feishu_ok and tg_ok) or (not push_enabled) else 1
+        return 0 if (push_enabled and feishu_ok) or (not push_enabled) else 1
 
     tickflow_client = TickFlowClient(api_key=tickflow_api_key)
     scored = _run_rule_scan(
@@ -550,7 +550,7 @@ def main() -> int:
         report=report,
         logs_path=logs_path,
     )
-    push_ok = (not push_enabled) or (feishu_ok and tg_ok)
+    push_ok = (not push_enabled) or feishu_ok
     _log(
         f"任务结束: candidates={len(merged)}, llm={llm_success}/{llm_total}, "
         f"llm_routes_hit={llm_route_stats}, "

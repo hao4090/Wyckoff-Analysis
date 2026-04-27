@@ -414,6 +414,19 @@ def get_recent_memories(*, memory_type: str | None = None, limit: int = 20) -> l
     return [dict(r) for r in cur.fetchall()]
 
 
+def search_memory_by_keywords(keywords: list[str], limit: int = 5) -> list[dict]:
+    conn = get_db()
+    if not keywords:
+        return []
+    clauses = ["content LIKE ?" for _ in keywords]
+    params = [f"%{kw}%" for kw in keywords]
+    cur = conn.execute(
+        f"SELECT * FROM agent_memory WHERE ({' OR '.join(clauses)}) ORDER BY created_at DESC LIMIT ?",
+        params + [limit],
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
 def prune_memories(keep_days: int = 90) -> int:
     conn = get_db()
     cutoff = (datetime.utcnow() - timedelta(days=keep_days)).isoformat()
@@ -566,6 +579,15 @@ def load_tail_buy_history(
 # ---------------------------------------------------------------------------
 # Chat sessions
 # ---------------------------------------------------------------------------
+
+def delete_chat_session(session_id: str) -> int:
+    conn = get_db()
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM chat_log WHERE session_id=?", (session_id,),
+        )
+    return cur.rowcount
+
 
 def list_chat_sessions(limit: int = 50) -> list[dict]:
     """返回最近的会话列表，每个会话的首条用户消息作为摘要。"""

@@ -474,9 +474,14 @@ def main() -> int:
     prev_trade_date, today_trade_date = _resolve_trade_dates(logs_path)
     try:
         pending_candidates = _load_signal_pending_candidates(prev_trade_date, logs_path)
-    except Exception as e:
-        _log(f"读取候选池失败: {e}", logs_path)
-        return 1
+    except RuntimeError as e:
+        err_str = str(e)
+        if "signal_pending" in err_str and ("PGRST205" in err_str or "not found" in err_str.lower()):
+            _log(f"signal_pending 表尚未创建（{e}），视为空候选池", logs_path)
+            pending_candidates = []
+        else:
+            _log(f"读取候选池失败: {e}", logs_path)
+            return 1
 
     market_reminder = _resolve_market_reminder(today_trade_date)
     if not pending_candidates:

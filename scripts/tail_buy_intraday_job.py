@@ -463,9 +463,13 @@ def main() -> int:
     if not tickflow_api_key:
         _log("缺少 TICKFLOW_API_KEY，任务失败", logs_path)
         return 1
-    if not feishu_webhook or not tg_bot_token or not tg_chat_id:
-        _log("双通道推送未完整配置（需 FEISHU_WEBHOOK_URL + TG_BOT_TOKEN + TG_CHAT_ID）", logs_path)
-        return 1
+
+    push_enabled = bool(feishu_webhook and tg_bot_token and tg_chat_id)
+    if not push_enabled:
+        _log(
+            "通知渠道未完整配置（飞书/Telegram），将执行扫描但不推送结果",
+            logs_path,
+        )
 
     prev_trade_date, today_trade_date = _resolve_trade_dates(logs_path)
     try:
@@ -497,7 +501,7 @@ def main() -> int:
             logs_path=logs_path,
         )
         _log(f"无候选结束: feishu_ok={feishu_ok}, tg_ok={tg_ok}", logs_path)
-        return 0 if (feishu_ok and tg_ok) else 1
+        return 0 if (push_enabled and feishu_ok and tg_ok) or (not push_enabled) else 1
 
     tickflow_client = TickFlowClient(api_key=tickflow_api_key)
     scored = _run_rule_scan(
@@ -541,6 +545,7 @@ def main() -> int:
         report=report,
         logs_path=logs_path,
     )
+    push_ok = (not push_enabled) or (feishu_ok and tg_ok)
     _log(
         f"任务结束: candidates={len(merged)}, llm={llm_success}/{llm_total}, "
         f"llm_routes_hit={llm_route_stats}, "
@@ -548,7 +553,7 @@ def main() -> int:
         logs_path,
     )
 
-    if not feishu_ok or not tg_ok:
+    if not push_ok:
         return 1
     if not merged:
         return 1

@@ -475,8 +475,8 @@ def main() -> int:
     try:
         pending_candidates = _load_signal_pending_candidates(prev_trade_date, logs_path)
     except RuntimeError as e:
-        err_str = str(e)
-        if "signal_pending" in err_str and ("PGRST205" in err_str or "not found" in err_str.lower()):
+        err_lower = str(e).lower()
+        if "signal_pending" in err_lower and ("pgrst" in err_lower or "not found" in err_lower):
             _log(f"signal_pending 表尚未创建（{e}），视为空候选池", logs_path)
             pending_candidates = []
         else:

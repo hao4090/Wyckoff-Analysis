@@ -447,6 +447,9 @@ def _select_ai_input_codes(
         max_per_sector=2,
     )
     selected_codes = _dedup_order(trend_sel + accum_sel)
+    min_score = float(getattr(FunnelConfig, "min_funnel_score", 0.15) or 0)
+    if min_score > 0 and priority_score_map:
+        selected_codes = [c for c in selected_codes if priority_score_map.get(c, 0.0) >= min_score]
     track_map = {c: "Trend" for c in trend_sel}
     track_map.update({c: "Accum" for c in accum_sel})
     return selected_codes, priority_score_map, track_map

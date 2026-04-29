@@ -15,9 +15,9 @@ from integrations.llm_client import (
     get_provider_credentials,
 )
 
-# 大师模式默认配置 - Qwen
-DEFAULT_MASTER_PROVIDER = "qwen"
-DEFAULT_MASTER_MODEL = "qwen3.5-plus"
+# 大师模式默认配置 - 继承读盘室对话供应商设置
+DEFAULT_MASTER_PROVIDER = "minimax"
+DEFAULT_MASTER_MODEL = "MiniMax-M2.7"
 
 AI_ANALYSIS_DEFAULT_FEISHU_WEBHOOK = (
     "https://open.feishu.cn/open-apis/bot/v2/hook/4ef56ec3-fb84-4eb4-b4d9-775ae7de69ff"

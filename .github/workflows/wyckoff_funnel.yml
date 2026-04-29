@@ -24,8 +24,8 @@ jobs:
       QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
       QWEN_MODEL: qwen3.5-plus
       QWEN_BASE_URL: https://coding.dashscope.aliyuncs.com/v1
-      # 指定使用 Qwen 作为默认 LLM 供应商
-      DEFAULT_LLM_PROVIDER: qwen
+      # 指定使用 Minimax 作为默认 LLM 供应商
+      DEFAULT_LLM_PROVIDER: minimax
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
       MY_PORTFOLIO_STATE: ${{ secrets.MY_PORTFOLIO_STATE }}

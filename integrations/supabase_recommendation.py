@@ -599,8 +599,15 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
             latest_trade_date_global = current_trade_date
 
         for row in rows:
-            rec_date = _recommend_date_to_yyyymmdd(row.get("recommend_date"))
-            pick_date = _pick_close_on_or_before(trade_dates, rec_date)
+            rec_date_raw = row.get("recommend_date")
+            rec_date = _recommend_date_to_yyyymmdd(rec_date_raw)
+            if not rec_date:
+                continue
+            # 确保是 8 位字符串格式
+            rec_date_str = str(rec_date).zfill(8)
+            if len(rec_date_str) != 8:
+                continue
+            pick_date = _pick_close_on_or_before(trade_dates, rec_date_str)
             if not pick_date:
                 continue
             initial_close = float(close_map[pick_date])

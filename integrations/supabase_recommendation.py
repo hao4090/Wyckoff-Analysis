@@ -642,6 +642,7 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
             )
 
     print(f"[DEBUG] updates list length: {len(updates)}, updates[:3]={updates[:3] if updates else 'empty'}", flush=True)
+    updated_keys = set()
     if updates:
         for item in updates:
             row_id = item.pop("id", None)
@@ -658,14 +659,10 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
             try:
                 result = q.execute()
                 print(f"[DEBUG] update success: row_id={row_id}, code={code_val}, rec={rec_date_val}, count={len(result.data) if result.data else 0}", flush=True)
+                if code_val is not None and rec_date_val is not None:
+                    updated_keys.add(f"{code_val}:{rec_date_val}")
             except Exception as e:
                 print(f"[DEBUG] update failed: row_id={row_id}, code={code_val}, rec={rec_date_val}, err={e}", flush=True)
-
-    updated_keys = {
-        f"{x.get('code', '')}:{x.get('recommend_date', '')}"
-        for x in updates
-        if x.get("code") is not None and x.get("recommend_date") is not None
-    }
     return {
         "rows_total": len(records),
         "rows_updated": len(updated_keys),

@@ -19,7 +19,7 @@ jobs:
       # Minimax API 配置
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
       MINIMAX_MODEL: Minimax-M2.7
-      MINIMAX_BASE_URL: https://api.minimaxi.com/anthropic
+      MINIMAX_BASE_URL: https://api.minimaxi.com/v1
       # Qwen API 配置（通义千问）
       QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
       QWEN_MODEL: qwen3.5-plus

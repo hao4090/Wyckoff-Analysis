@@ -596,6 +596,7 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
             for td, px in zip(work["trade_date"].tolist(), work["close"].tolist())
         }
         trade_dates = sorted(close_map.keys())
+        print(f"[DEBUG] close_map sample: {dict(list(close_map.items())[:3])}, trade_dates={trade_dates[:3]}", flush=True)
         current_trade_date = trade_dates[-1]
         current_close = float(close_map[current_trade_date])
         if not latest_trade_date_global or current_trade_date > latest_trade_date_global:
@@ -619,6 +620,7 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
                 import sys
                 print(f"[DEBUG] pick_date empty: id={row.get('id')}, rec={rec_date_str}, trades={trade_dates[:3]}", flush=True, file=sys.stderr)
                 continue
+            print(f"[DEBUG] pick_date found: id={row.get('id')}, rec={rec_date_str}, pick={pick_date}, init={close_map[pick_date]}, curr={current_close}", flush=True)
             initial_close = float(close_map[pick_date])
             if initial_close <= 0 or current_close <= 0:
                 import sys
@@ -626,6 +628,7 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
                 continue
             change_pct = round((current_close - initial_close) / initial_close * 100.0, 2)
             row_id = row.get("id")
+            print(f"[DEBUG] appending update: id={row_id}, code={code6}, rec={rec_date_str}, init={initial_close}, curr={current_close}, pct={change_pct}", flush=True)
             updates.append(
                 {
                     "id": row_id,
@@ -638,6 +641,7 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
                 }
             )
 
+    print(f"[DEBUG] updates list length: {len(updates)}, updates[:3]={updates[:3] if updates else 'empty'}", flush=True)
     if updates:
         for item in updates:
             row_id = item.pop("id", None)

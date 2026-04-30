@@ -26,6 +26,8 @@ jobs:
       QWEN_BASE_URL: https://coding.dashscope.aliyuncs.com/v1
       # 指定使用 Minimax 作为默认 LLM 供应商
       DEFAULT_LLM_PROVIDER: minimax
+      # RAG 语义检查使用 Minimax
+      RAG_SEMANTIC_PROVIDER: minimax
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
       MY_PORTFOLIO_STATE: ${{ secrets.MY_PORTFOLIO_STATE }}

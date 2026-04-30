@@ -51,9 +51,10 @@ RAG_SEMANTIC_VETO_ENABLED = os.getenv("RAG_SEMANTIC_VETO_ENABLED", "1").strip().
 RAG_SEMANTIC_TIMEOUT = int(os.getenv("RAG_SEMANTIC_TIMEOUT", "25"))
 from integrations.llm_client import DEFAULT_GEMINI_MODEL as _DEFAULT_GEMINI_MODEL
 
+RAG_SEMANTIC_PROVIDER = os.getenv("RAG_SEMANTIC_PROVIDER", "gemini").strip().lower()
 RAG_SEMANTIC_MODEL = (
     os.getenv("RAG_SEMANTIC_MODEL", "").strip()
-    or os.getenv("GEMINI_MODEL", "").strip()
+    or os.getenv(f"{RAG_SEMANTIC_PROVIDER.upper()}_MODEL", "").strip()
     or _DEFAULT_GEMINI_MODEL
 )
 _STAR_ST_PATTERN = re.compile(r"(?<![a-z0-9])(?:\*|＊)st\s*[\u4e00-\u9fff]", re.IGNORECASE)
@@ -185,9 +186,14 @@ def _semantic_negative_via_gemini(
     """关键词命中后的二次语义判定。"""
     if not RAG_SEMANTIC_VETO_ENABLED:
         return (None, None)
-    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    # 支持可配置 LLM 提供商
+    provider = RAG_SEMANTIC_PROVIDER
+    api_key = (
+        os.getenv("RAG_SEMANTIC_API_KEY", "").strip()
+        or os.getenv(f"{provider.upper()}_API_KEY", "").strip()
+    )
     if not api_key:
-        return (None, "semantic_disabled:missing_gemini_api_key")
+        return (None, f"semantic_disabled:missing_{provider}_api_key")
 
     from integrations.llm_client import call_llm
 
@@ -223,7 +229,7 @@ def _semantic_negative_via_gemini(
     )
     try:
         raw = call_llm(
-            provider="gemini",
+            provider=provider,
             model=RAG_SEMANTIC_MODEL,
             api_key=api_key,
             system_prompt=system_prompt,

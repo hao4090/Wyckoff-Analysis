@@ -721,23 +721,30 @@ def _call_track_report(
         models_to_try.append(GEMINI_MODEL_FALLBACK)
 
     for m in models_to_try:
-        try:
-            report = call_llm(
-                provider=provider,
-                model=m,
-                api_key=api_key,
-                system_prompt=system_prompt,
-                user_message=user_message,
-                base_url=llm_base_url or None,
-                timeout=300,
-                max_output_tokens=STEP3_MAX_OUTPUT_TOKENS,
-            )
-            used_model = m
+        for attempt in range(1, 4):
+            try:
+                report = call_llm(
+                    provider=provider,
+                    model=m,
+                    api_key=api_key,
+                    system_prompt=system_prompt,
+                    user_message=user_message,
+                    base_url=llm_base_url or None,
+                    timeout=300,
+                    max_output_tokens=STEP3_MAX_OUTPUT_TOKENS,
+                )
+                used_model = m
+                break
+            except Exception as e:
+                print(f"[step3] {track} 轨模型 {m} 失败 (attempt {attempt}/3): {e}")
+                if attempt == 3:
+                    if m == models_to_try[-1]:
+                        return (False, "", "")
+                    break
+                import time
+                time.sleep(5)
+        if used_model:
             break
-        except Exception as e:
-            print(f"[step3] {track} 轨模型 {m} 失败: {e}")
-            if m == models_to_try[-1]:
-                return (False, "", "")
 
     if not _has_required_sections(report):
         print(f"[step3] {track} 轨首版研报缺少可识别分层章节，执行一次结构修复")

@@ -555,12 +555,15 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
     latest_trade_date_global = ""
 
     for code6, rows in grouped.items():
+        print(f"[DEBUG] Processing code6={code6}, rows_count={len(rows)}", flush=True)
         rec_dates = [
             _recommend_date_to_yyyymmdd(r.get("recommend_date"))
             for r in rows
         ]
         rec_dates = [d for d in rec_dates if d]
+        print(f"[DEBUG] rec_dates after filter: {rec_dates[:3]}...", flush=True)
         if not rec_dates:
+            print(f"[DEBUG] rec_dates empty, skipping code6={code6}", flush=True)
             continue
         start_date = min(rec_dates)
         ts_code = _to_ts_code_recommendation(code6)

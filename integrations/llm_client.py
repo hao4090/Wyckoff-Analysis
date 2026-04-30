@@ -32,7 +32,7 @@ SUPPORTED_PROVIDERS = (
 OPENAI_COMPATIBLE_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "zhipu": "https://open.bigmodel.cn/api/paas/v4",
-    "minimax": "https://api.minimaxi.com/anthropic",
+    "minimax": "https://api.minimaxi.com/v1",
     "deepseek": "https://api.deepseek.com/v1",
     "qwen": "https://coding.dashscope.aliyuncs.com/v1",
     "kimi": "https://api.moonshot.cn/v1",

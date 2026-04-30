@@ -602,20 +602,24 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
             rec_date_raw = row.get("recommend_date")
             rec_date = _recommend_date_to_yyyymmdd(rec_date_raw)
             if not rec_date:
-                print(f"[debug] rec_date is empty for row id={row.get('id')}, rec_date_raw={repr(rec_date_raw)}")
+                import sys
+                print(f"[DEBUG] rec_date empty: id={row.get('id')}, raw={repr(rec_date_raw)}", flush=True, file=sys.stderr)
                 continue
             # 确保是 8 位字符串格式
             rec_date_str = str(rec_date).zfill(8)
             if len(rec_date_str) != 8:
-                print(f"[debug] rec_date_str invalid: {repr(rec_date_str)} for row id={row.get('id')}")
+                import sys
+                print(f"[DEBUG] rec_date_str invalid: id={row.get('id')}, str={repr(rec_date_str)}", flush=True, file=sys.stderr)
                 continue
             pick_date = _pick_close_on_or_before(trade_dates, rec_date_str)
             if not pick_date:
-                print(f"[debug] pick_date empty: trade_dates={trade_dates[:3]}..., rec_date_str={rec_date_str} for row id={row.get('id')}")
+                import sys
+                print(f"[DEBUG] pick_date empty: id={row.get('id')}, rec={rec_date_str}, trades={trade_dates[:3]}", flush=True, file=sys.stderr)
                 continue
             initial_close = float(close_map[pick_date])
             if initial_close <= 0 or current_close <= 0:
-                print(f"[debug] price invalid: initial_close={initial_close}, current_close={current_close} for row id={row.get('id')}")
+                import sys
+                print(f"[DEBUG] price invalid: id={row.get('id')}, init={initial_close}, curr={current_close}", flush=True, file=sys.stderr)
                 continue
             change_pct = round((current_close - initial_close) / initial_close * 100.0, 2)
             row_id = row.get("id")

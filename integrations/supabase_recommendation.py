@@ -653,8 +653,13 @@ def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
             elif code_val is not None and rec_date_val is not None:
                 q = q.eq("code", code_val).eq("recommend_date", rec_date_val)
             else:
+                print(f"[DEBUG] update skipped: row_id={row_id}, code={code_val}, rec={rec_date_val}", flush=True)
                 continue
-            q.execute()
+            try:
+                result = q.execute()
+                print(f"[DEBUG] update success: row_id={row_id}, code={code_val}, rec={rec_date_val}, count={len(result.data) if result.data else 0}", flush=True)
+            except Exception as e:
+                print(f"[DEBUG] update failed: row_id={row_id}, code={code_val}, rec={rec_date_val}, err={e}", flush=True)
 
     updated_keys = {
         f"{x.get('code', '')}:{x.get('recommend_date', '')}"

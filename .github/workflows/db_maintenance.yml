@@ -5,6 +5,12 @@ on:
     # 北京时间 23:05（UTC+8）
     - cron: "5 15 * * *"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run mode (no actual deletion)"
+        required: false
+        default: "false"
+        type: boolean
 
 concurrency:
   group: db-maintenance-${{ github.ref }}
@@ -36,4 +42,8 @@ jobs:
 
       - name: Run DB maintenance
         run: |
-          python -u scripts/db_maintenance.py
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            ARGS="--dry-run"
+          fi
+          python -u scripts/db_maintenance.py $ARGS

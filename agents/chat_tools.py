@@ -65,7 +65,7 @@ def _hist_metadata(df: Any) -> dict[str, Any]:
         return {}
     attrs = getattr(df, "attrs", {}) or {}
     meta: dict[str, Any] = {}
-    for key in ("source", "upstream_source", "cache_status"):
+    for key in ("source", "upstream_source", "cache_status", "cached_until"):
         val = str(attrs.get(key, "") or "").strip()
         if val:
             meta[key] = val
@@ -1286,6 +1286,33 @@ def get_tail_buy_history(run_date: str = "", decision: str = "", limit: int = 20
             decision=str(decision or "").strip(),
             limit=limit,
         )
+        if not records:
+            from integrations.supabase_tail_buy import load_tail_buy_from_supabase
+            sb_rows = load_tail_buy_from_supabase(limit=limit)
+            if sb_rows:
+                from integrations.local_db import save_tail_buy_results
+                save_tail_buy_results([
+                    {
+                        "code": str(r.get("code", "")),
+                        "name": r.get("name", ""),
+                        "run_date": str(r.get("run_date", "")),
+                        "signal_date": r.get("signal_date", ""),
+                        "signal_type": r.get("signal_type", ""),
+                        "status": "",
+                        "final_decision": r.get("final_decision", "BUY"),
+                        "rule_score": float(r.get("rule_score", 0)),
+                        "priority_score": float(r.get("priority_score", 0)),
+                        "rule_reasons": r.get("rule_reasons", ""),
+                        "llm_decision": r.get("llm_decision", ""),
+                        "llm_reason": r.get("llm_reason", ""),
+                    }
+                    for r in sb_rows
+                ])
+                records = load_tail_buy_history(
+                    run_date=str(run_date or "").strip(),
+                    decision=str(decision or "").strip(),
+                    limit=limit,
+                )
         if not records:
             return {"message": "暂无尾盘策略记录", "records": []}
         simplified = [

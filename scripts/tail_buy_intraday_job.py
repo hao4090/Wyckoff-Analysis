@@ -1535,6 +1535,12 @@ def main() -> int:
         ]
         saved = save_tail_buy_results(persistable)
         _log(f"已写入 {saved} 条尾盘结果到本地 SQLite", logs_path)
+        # 持久化 BUY 到 Supabase
+        buy_rows = [r for r in persistable if r["final_decision"] == "BUY"]
+        if buy_rows:
+            from integrations.supabase_tail_buy import save_tail_buy_to_supabase
+            n_sb = save_tail_buy_to_supabase(buy_rows)
+            _log(f"已写入 {n_sb} 条 BUY 到 Supabase", logs_path)
     except Exception as e:
         _log(f"写入 SQLite 失败（不影响推送）: {e}", logs_path)
 

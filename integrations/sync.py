@@ -108,6 +108,42 @@ def sync_portfolio(portfolio_id: str = "USER_LIVE", client=None) -> int:
     return 1 + len(positions)
 
 
+def sync_tail_buy(client=None) -> int:
+    from integrations.local_db import save_tail_buy_results, update_sync_meta
+    from core.constants import TABLE_TAIL_BUY_HISTORY
+    sb = client or _get_admin_client()
+    if sb is None:
+        return 0
+    resp = (
+        sb.table(TABLE_TAIL_BUY_HISTORY)
+        .select("*")
+        .order("run_date", desc=True)
+        .limit(200)
+        .execute()
+    )
+    rows = resp.data or []
+    persistable = [
+        {
+            "code": str(r.get("code", "")),
+            "name": r.get("name", ""),
+            "run_date": str(r.get("run_date", "")),
+            "signal_date": r.get("signal_date", ""),
+            "signal_type": r.get("signal_type", ""),
+            "status": "",
+            "final_decision": r.get("final_decision", "BUY"),
+            "rule_score": float(r.get("rule_score", 0)),
+            "priority_score": float(r.get("priority_score", 0)),
+            "rule_reasons": r.get("rule_reasons", ""),
+            "llm_decision": r.get("llm_decision", ""),
+            "llm_reason": r.get("llm_reason", ""),
+        }
+        for r in rows
+    ]
+    n = save_tail_buy_results(persistable)
+    update_sync_meta("tail_buy_history", n)
+    return n
+
+
 def sync_all() -> dict[str, int]:
     """同步所有表。返回 {table_name: row_count}。"""
     from integrations.local_db import needs_sync
@@ -121,6 +157,7 @@ def sync_all() -> dict[str, int]:
         ("signal_pending", sync_signals, 4),
         ("market_signal_daily", sync_market_signals, 6),
         ("portfolio", sync_portfolio, 2),
+        ("tail_buy_history", sync_tail_buy, 4),
     ]:
         if not needs_sync(table, max_age_hours=max_age):
             continue

@@ -23,6 +23,10 @@ from core.constants import (
 )
 from integrations.supabase_base import create_admin_client
 
+# 保留期检查阈值（超过这些值会触发告警）
+DELETE_COUNT_THRESHOLD = 100   # 单次删除行数阈值
+DELETE_RATIO_THRESHOLD = 0.5   # 单次删除比例阈值
+
 # (table, date_column, ttl_days)
 # 注意: signal_pending / market_signal_daily / daily_nav 表可能尚未创建，
 # cleanup_table 中会优雅处理 PGRST205 / "not found" 等错误。
@@ -35,7 +39,7 @@ CLEANUP_RULES: list[tuple[str, str, int]] = [
     (TABLE_DAILY_NAV, "trade_date", 15),
 ]
 
-# 以下表的日期列类型为 bigint，需要将 cutoff 转为 Unix 时间戳(秒)
+# 以下表的日期列类型为 bigint(YYYYMMDD格式)，需要特殊处理
 BIGINT_DATE_COLUMNS = {
     TABLE_RECOMMENDATION_TRACKING: "recommend_date",
 }
@@ -45,11 +49,43 @@ def _cutoff_iso(ttl_days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=ttl_days)).date().isoformat()
 
 
-def _cutoff_unix_timestamp(ttl_days: int) -> int:
-    """将 cutoff 转为 Unix 时间戳(秒)，用于 bigint 类型的日期列。"""
-    return int(
-        (datetime.now(timezone.utc) - timedelta(days=ttl_days)).timestamp()
+def _cutoff_yyyymmdd(ttl_days: int) -> int:
+    """将 cutoff 转为 YYYYMMDD 格式整数，用于 recommend_date 列（YYYYMMDD格式）。"""
+    return int((datetime.now(timezone.utc).date() - timedelta(days=ttl_days)).strftime("%Y%m%d"))
+
+
+def _send_deletion_warning(table: str, rows_to_delete: int, total_rows: int, ttl_days: int) -> None:
+    """当删除行数超过阈值时发送告警通知。"""
+    delete_ratio = rows_to_delete / total_rows if total_rows > 0 else 0
+    threshold_count = int(os.getenv("DB_MAINTENANCE_COUNT_THRESHOLD", str(DELETE_COUNT_THRESHOLD)))
+    threshold_ratio = float(os.getenv("DB_MAINTENANCE_RATIO_THRESHOLD", str(DELETE_RATIO_THRESHOLD)))
+    exceeded = rows_to_delete > threshold_count or delete_ratio > threshold_ratio
+    msg = (
+        f"⚠️ **[db_maintenance] 数据删除告警**\n\n"
+        f"- 表名: `{table}`\n"
+        f"- 保留期: {ttl_days} 天\n"
+        f"- 本次将删除: **{rows_to_delete}** 行\n"
+        f"- 当前总行数: {total_rows} 行\n"
+        f"- 删除比例: {delete_ratio:.1%}\n"
+        f"- 阈值: ≤{threshold_count} 行 且 ≤{threshold_ratio:.0%}\n"
     )
+    if exceeded:
+        msg += "\n🚨 **超过阈值，已暂停自动删除！**\n请检查是否正常。"
+        print(f"[db_maintenance] WARNING: {table} delete threshold exceeded: {rows_to_delete}/{total_rows}")
+    else:
+        msg += "\n（如为异常，请立即检查！）"
+    try:
+        from utils.notify import send_all_webhooks
+        feishu = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
+        wecom = os.getenv("WECOM_WEBHOOK_URL", "").strip()
+        dingtalk = os.getenv("DINGTALK_WEBHOOK_URL", "").strip()
+        tg_token = os.getenv("TG_BOT_TOKEN", "").strip()
+        tg_chat = os.getenv("TG_CHAT_ID", "").strip()
+        if feishu or wecom or dingtalk or (tg_token and tg_chat):
+            send_all_webhooks(feishu, wecom, dingtalk, "数据删除告警", msg,
+                             tg_bot_token=tg_token, tg_chat_id=tg_chat)
+    except Exception as e:
+        print(f"[db_maintenance] failed to send warning: {e}")
 
 
 def _is_table_not_found_error(error: Exception) -> bool:
@@ -123,9 +159,9 @@ def _cleanup_stock_hist_cache_batched(
 def cleanup_table(
     client, table: str, date_col: str, ttl_days: int, *, dry_run: bool = False
 ) -> tuple[str, int | None]:
-    # bigint 列: 使用 Unix 时间戳
+    # bigint 列 (recommend_date): 使用 YYYYMMDD 格式整数比较
     if table in BIGINT_DATE_COLUMNS and BIGINT_DATE_COLUMNS[table] == date_col:
-        cutoff = str(_cutoff_unix_timestamp(ttl_days))
+        cutoff = _cutoff_yyyymmdd(ttl_days)
     else:
         cutoff = _cutoff_iso(ttl_days)
 
@@ -144,9 +180,29 @@ def cleanup_table(
         if table == TABLE_STOCK_HIST_CACHE:
             return _cleanup_stock_hist_cache_batched(client, cutoff)
 
+        # 删除前安全检查（非 stock_hist_cache 的小表）
+        total_resp = client.table(table).select("*", count="exact").limit(0).execute()
+        total_rows = total_resp.count or 0
+        to_delete_resp = (
+            client.table(table)
+            .select("*", count="exact")
+            .lt(date_col, cutoff)
+            .limit(0)
+            .execute()
+        )
+        rows_to_delete = to_delete_resp.count or 0
+        if rows_to_delete > 0:
+            _send_deletion_warning(table, rows_to_delete, total_rows, ttl_days)
+            # 阈值：超过阈值则暂停
+            delete_ratio = rows_to_delete / total_rows if total_rows > 0 else 0
+            threshold_count = int(os.getenv("DB_MAINTENANCE_COUNT_THRESHOLD", str(DELETE_COUNT_THRESHOLD)))
+            threshold_ratio = float(os.getenv("DB_MAINTENANCE_RATIO_THRESHOLD", str(DELETE_RATIO_THRESHOLD)))
+            if rows_to_delete > threshold_count or delete_ratio > threshold_ratio:
+                return f"skipped: threshold exceeded ({rows_to_delete} rows, {delete_ratio:.1%})", rows_to_delete
+
         # 其他小表: 直接 PostgREST DELETE（高效单请求）
         client.table(table).delete().lt(date_col, cutoff).execute()
-        return "ok", None
+        return "ok", rows_to_delete
     except Exception as e:
         # 表尚未创建时视为非致命错误
         if _is_table_not_found_error(e):

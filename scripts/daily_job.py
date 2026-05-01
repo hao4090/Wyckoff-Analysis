@@ -131,6 +131,49 @@ def _persist_benchmark_context(benchmark_context: dict, logs_path: str | None = 
     )
 
 
+def _check_recommendation_tracking_integrity(recommend_date_int: int, logs_path: str | None = None) -> None:
+    """推荐跟踪数据完整性检查：检测历史数据是否异常丢失。"""
+    try:
+        from integrations.supabase_base import create_admin_client
+        from core.constants import TABLE_RECOMMENDATION_TRACKING
+        from datetime import date, timedelta
+        client = create_admin_client()
+        today = datetime.now(TZ).date()
+        recent_dates = [(today - timedelta(days=i)).strftime("%Y%m%d") for i in range(7)]
+        total_count = 0
+        anomaly_lines = []
+        # 用单次 in 查询获取所有日期的统计
+        resp = (
+            client.table(TABLE_RECOMMENDATION_TRACKING)
+            .select("recommend_date", count="exact")
+            .in_("recommend_date", [int(d) for d in recent_dates])
+            .execute()
+        )
+        date_counts: dict[int, int] = {}
+        for row in (resp.data or []):
+            rd = int(row.get("recommend_date", 0))
+            date_counts[rd] = date_counts.get(rd, 0) + 1
+        for d in recent_dates:
+            d_int = int(d)
+            cnt = date_counts.get(d_int, 0)
+            total_count += cnt
+            flag = "⚠️" if cnt == 0 and d_int <= recommend_date_int else ""
+            anomaly_lines.append(f"  {d}: {cnt} 条记录{flag}")
+        recent_total = sum(date_counts.get(int(d), 0) for d in recent_dates[:3])
+        warning = ""
+        if recent_total == 0 and recommend_date_int > 0:
+            warning = "\n⚠️ [告警] 最近3天无任何推荐记录，数据可能异常丢失！"
+        msg = (
+            f"[数据完整性检查] 推荐跟踪表\n"
+            + "\n".join(anomaly_lines)
+            + f"\n总计: {total_count} 条记录"
+            + warning
+        )
+        _log(msg, logs_path)
+    except Exception as e:
+        _log(f"[数据完整性检查] 检查失败: {e}", logs_path)
+
+
 def _load_step4_target() -> tuple[dict | None, str]:
     target_user_id = os.getenv("SUPABASE_USER_ID", "").strip()
     if not target_user_id:
@@ -274,6 +317,8 @@ def main() -> int:
                     f"推荐记录入库: ok={rec_ok}, count={len(symbols_info)}, date={recommend_trade_date_int}",
                     logs_path,
                 )
+                # 数据完整性检查
+                _check_recommendation_tracking_integrity(recommend_trade_date_int, logs_path)
             except Exception as e:
                 _log(f"推荐记录入库失败: {e}", logs_path)
 

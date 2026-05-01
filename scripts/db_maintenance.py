@@ -19,6 +19,7 @@ from core.constants import (
     TABLE_RECOMMENDATION_TRACKING,
     TABLE_SIGNAL_PENDING,
     TABLE_STOCK_HIST_CACHE,
+    TABLE_TAIL_BUY_HISTORY,
     TABLE_TRADE_ORDERS,
 )
 from integrations.supabase_base import create_admin_client
@@ -34,6 +35,7 @@ CLEANUP_RULES: list[tuple[str, str, int, str]] = [
     (TABLE_SIGNAL_PENDING, "signal_date", 15, "iso_date"),
     (TABLE_MARKET_SIGNAL_DAILY, "trade_date", 30, "iso_date"),
     (TABLE_DAILY_NAV, "trade_date", 15, "iso_date"),
+    (TABLE_TAIL_BUY_HISTORY, "run_date", 10, "iso_date"),
 ]
 
 

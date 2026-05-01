@@ -54,6 +54,7 @@ _append_spot_bar_if_needed = partial(
 )
 
 TRADING_DAYS = 320
+MAX_RETRIES = 3
 GEMINI_MODEL_FALLBACK = ""
 STEP3_REPORT_STYLE = (
     os.getenv("STEP3_REPORT_STYLE", "v3_three_camp").strip().lower()
@@ -702,6 +703,63 @@ def _to_compliance_copy(content: str) -> str:
     return "\n".join(out_lines).strip()
 
 
+def _make_batch_user_message(full_message: str, batch_codes: list[str], track: str) -> str:
+    """
+    从完整的 user_message 中提取只包含 batch_codes 的股票段落，
+    用于分批调用 LLM 时构造更小的上下文。
+    """
+    if not batch_codes:
+        return ""
+    code_set = set(batch_codes)
+    lines = full_message.splitlines()
+    out_lines: list[str] = []
+    in_payload = False
+    current_code = None
+    keep_block = False
+
+    for ln in lines:
+        # 检测宏观水温段落（全部保留）
+        if ln.startswith("[宏观水温") or ln.startswith("[仓位约束"):
+            out_lines.append(ln)
+            in_payload = False
+            continue
+        # 检测股票块开始（纯 6 位数字开头）
+        m = re.match(r"^(\d{6})\s", ln)
+        if m:
+            current_code = m.group(1)
+            keep_block = current_code in code_set
+            in_payload = True
+            if keep_block:
+                out_lines.append(ln)
+        elif in_payload and (ln.startswith("##") or re.match(r"^\[|\[", ln)):
+            # 遇到下一个股票的标题或宏观段，说明当前块结束
+            m2 = re.match(r"^(\d{6})\s", ln)
+            if m2:
+                current_code = m2.group(1)
+                keep_block = current_code in code_set
+                if keep_block:
+                    out_lines.append(ln)
+            else:
+                in_payload = False
+                if keep_block:
+                    out_lines.append(ln)
+        elif in_payload and keep_block:
+            out_lines.append(ln)
+        # 非 payload 行（scope 说明等）保留
+        elif not in_payload and not keep_block:
+            if not out_lines or out_lines[-1].strip() != "":
+                pass  # 跳过空行
+            # 保留 scope 说明段落（以 [ 或 ## 开头且不在 payload 内）
+            if ln.startswith("[") or ln.startswith("请重点审查") or ln.startswith("本轮仅分析"):
+                out_lines.append(ln)
+
+    result = "\n".join(out_lines)
+    # 确保 benchmark_lines 存在（如果用户消息有 benchmark_lines 但被漏掉，加上兜底）
+    if "[本轮分析范围]" not in result and "本轮仅分析" not in result:
+        result = result.strip()
+    return result
+
+
 def _call_track_report(
     *,
     track: str,
@@ -714,30 +772,86 @@ def _call_track_report(
     provider: str = "gemini",
     llm_base_url: str = "",
 ) -> tuple[bool, str, str]:
-    report = ""
+    """
+    将 selected_codes / selected_df 分为每批 BATCH_SIZE 只，
+    逐批调用 LLM，拼接后再做章节校验与结构修复。
+    """
+    BATCH_SIZE = 10
+    report_parts: list[str] = []
     used_model = ""
     models_to_try = [model]
     if GEMINI_MODEL_FALLBACK and GEMINI_MODEL_FALLBACK != model:
         models_to_try.append(GEMINI_MODEL_FALLBACK)
 
-    for m in models_to_try:
-        try:
-            report = call_llm(
-                provider=provider,
-                model=m,
-                api_key=api_key,
-                system_prompt=system_prompt,
-                user_message=user_message,
-                base_url=llm_base_url or None,
-                timeout=500,
-                max_output_tokens=STEP3_MAX_OUTPUT_TOKENS,
-            )
-            used_model = m
+    # 预切 benchmark_lines（从 user_message 首行提取，忽略 "[宏观水温...]" 之后的行）
+    lines = user_message.splitlines()
+    benchmark_end = 0
+    for i, ln in enumerate(lines):
+        if ln.startswith("[宏观水温"):
+            benchmark_end = i
             break
-        except Exception as e:
-            print(f"[step3] {track} 轨模型 {m} 失败: {e}")
+    benchmark_block = "\n".join(lines[:benchmark_end])
+    user_body = "\n".join(lines[benchmark_end:]) if benchmark_end else user_message
+
+    # 分批
+    all_codes = [str(c).strip() for c in selected_codes]
+    all_indices = list(selected_df.index)
+    total = len(all_codes)
+
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch_codes = all_codes[batch_start:batch_start + BATCH_SIZE]
+        batch_indices = all_indices[batch_start:batch_start + BATCH_SIZE]
+        batch_df = selected_df.loc[batch_indices]
+
+        # 从 user_body 中按代码子集过滤只属于本批的 payload block
+        # 简单策略：用完整 user_message，但通过截取批次的 block 实现
+        # 更可靠做法：在 user_message 中找到该批的股票对应的段落
+        batch_user_message = _make_batch_user_message(
+            user_message, batch_codes, track
+        )
+        if not batch_user_message.strip():
+            print(f"[step3] {track} 批 {batch_start//BATCH_SIZE+1} user_message 为空，跳过")
+            continue
+
+        ok_batch = False
+        err_detail = ""
+        for m in models_to_try:
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    part = call_llm(
+                        provider=provider,
+                        model=m,
+                        api_key=api_key,
+                        system_prompt=system_prompt,
+                        user_message=batch_user_message,
+                        base_url=llm_base_url or None,
+                        timeout=500,
+                        max_output_tokens=STEP3_MAX_OUTPUT_TOKENS,
+                    )
+                    used_model = m
+                    ok_batch = True
+                    print(f"[step3] {track} 批 {batch_start//BATCH_SIZE+1} 成功 ({len(batch_codes)} 只)")
+                    break
+                except Exception as e:
+                    err_detail = str(e)
+                    print(f"[step3] {track} 批 {batch_start//BATCH_SIZE+1} LLM 失败 (尝试 {attempt}/{MAX_RETRIES}): {e}")
+                    if attempt == MAX_RETRIES:
+                        break
+            if ok_batch:
+                break
+            # 最后一个 model 也不行 → 本批彻底失败
             if m == models_to_try[-1]:
+                print(f"[step3] {track} 批 {batch_start//BATCH_SIZE+1} 所有 model/重试耗尽，放弃")
+                # 只要有一批失败就返回失败（不 mute）
                 return (False, "", "")
+
+        if ok_batch and part:
+            report_parts.append(part)
+
+    if not report_parts:
+        return (False, "", "")
+
+    report = "\n\n".join(report_parts)
 
     if not _has_required_sections(report):
         print(f"[step3] {track} 轨首版研报缺少可识别分层章节，执行一次结构修复")

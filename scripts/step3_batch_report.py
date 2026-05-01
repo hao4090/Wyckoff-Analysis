@@ -54,7 +54,7 @@ _append_spot_bar_if_needed = partial(
 )
 
 TRADING_DAYS = 320
-MAX_RETRIES = 3
+MAX_RETRIES = 2
 GEMINI_MODEL_FALLBACK = ""
 STEP3_REPORT_STYLE = (
     os.getenv("STEP3_REPORT_STYLE", "v3_three_camp").strip().lower()
@@ -825,7 +825,7 @@ def _call_track_report(
                         system_prompt=system_prompt,
                         user_message=batch_user_message,
                         base_url=llm_base_url or None,
-                        timeout=500,
+                        timeout=300,
                         max_output_tokens=STEP3_MAX_OUTPUT_TOKENS,
                     )
                     used_model = m
